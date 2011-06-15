@@ -1,0 +1,10 @@
+!THIS IS ONLY A DEVELOPMENT DEMO!
+That is playground for developer
+Please do not download it if you want something playable.
+
+This is NOT a demo of game, as it does not represent planed game feeling and so on.
+Game could be completely different.
+
+Also you could find here a lot of bad code, sorry.
+My experimental development looks that way.
+Final code will be more accurate.

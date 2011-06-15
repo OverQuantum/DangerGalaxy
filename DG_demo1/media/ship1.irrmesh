@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<mesh xmlns="http://irrlicht.sourceforge.net/IRRMESH_09_2007" version="1.0">
+<!-- Created 15:24 05.06.2011  manually -->
+   <buffer>
+      <material bmat="uvmat:plane0.jpg:00100">
+         <enum name="Type" value="solid"/>
+         <color name="Ambient" value="ffffffff"/>
+         <color name="Diffuse" value="ff00ff00"/>
+         <color name="Emissive" value="ff000000"/>
+         <color name="Specular" value="ffffff00"/>
+         <float name="Shininess" value="0.000000"/>
+         <float name="Param1" value="0.000000"/>
+         <float name="Param2" value="0.000000"/>
+         <bool name="Wireframe" value="false"/>
+         <bool name="GouraudShading" value="true"/>
+         <bool name="Lighting" value="true"/>
+         <bool name="ZWriteEnable" value="true"/>
+         <int name="ZBuffer" value="1"/>
+         <bool name="BackfaceCulling" value="true"/>
+         <bool name="FrontfaceCulling" value="false"/>
+         <bool name="FogEnable" value="false"/>
+         <bool name="NormalizeNormals" value="true"/>
+         <int name="AntiAliasing" value="5"/>
+         <int name="ColorMask" value="15"/>
+         <texture name="Texture1" value=""/>
+         <enum name="TextureWrap1" value="texture_clamp_repeat"/>
+         <bool name="BilinearFilter1" value="true"/>
+         <bool name="TrilinearFilter1" value="false"/>
+         <int name="AnisotropicFilter1" value="0"/>
+         <int name="LODBias1" value="0"/>
+      </material>
+      <vertices type="2tcoords" vertexCount="8">
+         -0.500000 -0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.500000 0.125000 0.000000 1.000000
+         0.500000 -0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.500000 0.000000 0.000000 1.000000
+         -0.500000 0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.625000 0.125000 0.000000 1.000000
+         0.500000 0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.625000 0.000000 0.000000 1.000000
+         -0.500000 -0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.500000 0.25000 0.000000 1.000000
+         0.500000 -0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.500000 0.1250000 0.000000 1.000000
+         -0.500000 0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.625000 0.25000 0.000000 1.000000
+         0.500000 0.500000 0.000000 0.000000 0.000000 -1.000000 ffffffff 0.625000 0.1250000 0.000000 1.000000
+      </vertices>
+      <indices indexCount="12">
+         0 2 1 1 2 3 4 6 5 5 6 7
+      </indices>
+   </buffer>
+</mesh>
