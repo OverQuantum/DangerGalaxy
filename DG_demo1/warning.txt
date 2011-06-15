@@ -8,3 +8,6 @@ Game could be completely different.
 Also you could find here a lot of bad code, sorry.
 My experimental development looks that way.
 Final code will be more accurate.
+
+Folder \media may contain resources, that not license-pure, this is test-time-only
+Binaries search \media in start folder
