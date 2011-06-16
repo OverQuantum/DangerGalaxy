@@ -24,6 +24,9 @@ Demo made from Irrlicht sample
 110615: ADD: 4 levels of thrust
 110615: ADD: debug text, diplaying speed in km/s and c
 110615: ADD: pseudo-relativistiv effect after 0.8c, speed=c could not be achived
+110616: CHG: UTF16 removed
+110616: ADD: gravity field info
+110616: CHG: gravity radius, inside planets and stars gravity is now linear fading (~r) instead of singularity (~1/r^2)
 
 
 DONE:
@@ -32,10 +35,12 @@ DONE:
 + gravity
 + all physics to double
 + thrust should be different - interplanet travels and adjusting orbit requires different thrust
++ estimation of gravity domination
 
 TODO
--2estimation of gravity domination
--3orbiting of gravity-domination body by orbital parameters, not simple euler
+-1autopilot to orbiting gravity-dominant object
+-2map of star system
+-?orbiting of gravity-domination body by orbital parameters, not simple euler
 - camera further from system, tham 4M? (degree=4000)
 - autopilot to travel to specific point
 - corona of star and atmosphere of planets by decal/billboard/etc
@@ -56,7 +61,7 @@ QUESTIONS
 CONTROL:
 A/D - rotate
 W/S - thrust
-Space - breaking (autopilot) relative to distant stats
+Space - breaking (autopilot) relative to distant stars
 1/2/3/4 - different thrust levels (1 - highest, 4 - lowest)
 Up/Down - zoom
 
@@ -89,6 +94,15 @@ typedef core::vector3d<f32>  vector3df;
 typedef core::vector3d<f64>  vector3d;
 
 //#define vector3d core::vector3df
+
+text_string print_f64(f64 value, wchar_t* format)
+{
+	wchar_t tmp[255];
+	swprintf_s(tmp, 255, format, value);
+	return tmp;
+}
+
+
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -177,11 +191,14 @@ class SpaceObject {
 		void SetPhysics(GamePhysics* physicsOwner) {physics = physicsOwner;}
 		void SetMaxThrust(f64 newMaxThrust, f64 newMaxRotationThrust) {maxThrust = newMaxThrust; maxRotationThrust = newMaxRotationThrust; }
 		void SetMass(f64 newMass) {mass = newMass;}
+		void SetMassRadius(f64 newMassRadius) {gravityMinRadius = newMassRadius;}
 		void SetGravity(bool emit, bool affected) {isEmitGravity = emit,isAffectedByGravity = affected;}
 		void SetName(text_string newName) {name = newName;}
 		
 		//void SetThrust(f64 newThrust) {thrustPower = newThrust;}
 		//void SetRotationSpeed(f64 newRotSpeed) {rotationSpeed = newRotSpeed;}
+
+		vector3d GetGravityAcceleration(vector3d location);
 		void SetControl(f64 newValue, ControlType type);
 
 		void AutopilotBreak();
@@ -199,6 +216,7 @@ class SpaceObject {
 		text_string name;
 
 		f64 mass;//for calc gravity
+		f64 gravityMinRadius;//only for calc gravity
 		f64 maxThrust;
 		f64 maxRotationThrust;
 
@@ -238,6 +256,7 @@ SpaceObject::SpaceObject()
 	motionType = MOTION_NONE;
 	isVisibleToPlayer = false;
 	mass = 0;
+	gravityMinRadius = 1.0;
 	orbitingObject = 0;
 	orbitalRadius = 1.0;
 	orbitalPeriod = 1.0;
@@ -462,6 +481,23 @@ void SpaceObject::UpdatePhysics(f64 time)
 	}
 }
 
+vector3d SpaceObject::GetGravityAcceleration(vector3d location)
+{
+	vector3d vectorDirection = position-location;
+	f64 distance = vectorDirection.getLength();
+	if (distance<gravityMinRadius)
+	{
+		//return vector3d(0);//simply nothing
+		return 66.7*vectorDirection*mass/(gravityMinRadius*gravityMinRadius*gravityMinRadius);
+	}
+	//G = 6.67384(80)*10^-11 N * (m/kg)^2 = .. [m*m*m/kg*s^2]
+	//distances is in 1000 km, so k=10^6  
+	//time is in 1000 seconds - k=1000
+	//mass is in 10^24 kg - k=10^24
+	//Ggame = G * 10^-18/(10^-24 * 10^-6) = G * 10^12 = 
+	return 66.7*vectorDirection*mass/(distance*distance*distance);
+}
+
 
 vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 {
@@ -470,16 +506,10 @@ vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 	for (i=0;i<SpaceObjectList.size();i++)
 		if (SpaceObjectList[i]->IsEmittingGravity())
 		{
-			vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
-			f64 distance = vectorDirection.getLength();
-			//G = 6.67384(80)*10^-11 N * (m/kg)^2 = .. [m*m*m/kg*s^2]
-			//distances is in 1000 km, so k=10^6  
-			//time is in 1000 seconds - k=1000
-			//mass is in 10^24 kg - k=10^24
-			//Ggame = G * 10^-18/(10^-24 * 10^-6) = G * 10^12 = 
-			acceleration += 66.7*vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance);
-			//SpaceObjectList[i]->UpdatePhysics(time);
-			//SpaceObjectList[i]->UpdateSceneNode();
+			//vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
+			//f64 distance = vectorDirection.getLength();
+			//acceleration += 66.7*vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance);
+			acceleration += SpaceObjectList[i]->GetGravityAcceleration(location);
 		}
 	return acceleration;
 }
@@ -488,16 +518,56 @@ text_string GamePhysics::GetGravityInfo(vector3d location)
 {
 	u32 i;
 	text_string gravityInfo(L"");
-	f64 maxGravity;
-	SpaceObject* maxGravityObject;
-	vector3d acceleration;
+	f64 gravity;
+	f64 maxGravity=-1;
+	SpaceObject* maxGravityObject =0;
+	f64 secondMaxGravity=-1;
+	SpaceObject* secondMaxGravityObject =0;
+
+
 	for (i=0;i<SpaceObjectList.size();i++)
 		if (SpaceObjectList[i]->IsEmittingGravity())
 		{
-			vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
-			f64 distance = vectorDirection.getLength();
-			acceleration = vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance);
+			//vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
+			//f64 distance = vectorDirection.getLength();
+			//gravity = (vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance)).getLength();
+			gravity = SpaceObjectList[i]->GetGravityAcceleration(location).getLength();
+			if (gravity>maxGravity)
+			{
+				secondMaxGravity = maxGravity;
+				secondMaxGravityObject = maxGravityObject;
+				maxGravity=gravity;
+				maxGravityObject = SpaceObjectList[i];
+			}
+			else if (gravity>secondMaxGravity)
+			{
+				secondMaxGravity = gravity;
+				secondMaxGravityObject = SpaceObjectList[i];
+			}
 		}
+	if (maxGravityObject)
+	{
+		gravityInfo = L"Max gravity from: ";
+		gravityInfo += maxGravityObject->GetName();
+		if (secondMaxGravityObject)
+		{
+			f64 percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
+			gravityInfo += " (";
+			gravityInfo += print_f64(percent,L"%.02f");
+			gravityInfo += L"%)\r\nNext gravity from: ";
+			gravityInfo += secondMaxGravityObject->GetName();
+			gravityInfo += " (";
+			//gravityInfo += (100.0-percent);
+			gravityInfo += print_f64(100.0-percent,L"%.02f");
+			gravityInfo += L"% / ";
+			gravityInfo += print_f64(log(secondMaxGravity)-log(maxGravity),L"%.02f");
+			gravityInfo += L" dgr)";
+		}
+	}
+	else
+	{
+		gravityInfo = L"no gravity detected";
+	}
 	return gravityInfo;
 }
 
@@ -642,6 +712,7 @@ SpaceObject* StarSystemConstructor::MakeStar(f64 radius, s32 polygons)
 	}
 	newStar->SetNode(sceneNode);
 	newStar->SetMotionType(SpaceObject::MOTION_NONE);
+	newStar->SetMassRadius(radius);
 	//planetOne->SetOrbitalParams(0,200,300,0);
 	physics->AddObject(newStar);
 
@@ -724,6 +795,7 @@ SpaceObject* StarSystemConstructor::MakePlanet(f64 radius, s32 polygons)
 		//node2->setMaterialFlag(video::EMF_NORMALIZE_NORMALS,true);
 	}
 	newPlanet->SetNode(sceneNode);
+	newPlanet->SetMassRadius(radius);
 	//planetOne->SetMotionType(SpaceObject::MOTION_NONE);
 	//newPlanet->SetOrbitalParams(0,200,300,0);
 
@@ -1153,6 +1225,8 @@ void DG_Game::Update() {
 	debug_text += " km/s\r\n";
 	debug_text += (playerSpeed/300000.0);
 	debug_text += " c; ";
+	debug_text += "\r\n";
+	debug_text += gamePhysics->GetGravityInfo(playerShip->GetPosition());
 	simpleTextToDisplay->setText(debug_text.c_str());
 
 	//playerShip->position += playerShip->speed;
