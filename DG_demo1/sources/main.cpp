@@ -27,6 +27,9 @@ Demo made from Irrlicht sample
 110616: CHG: UTF16 removed
 110616: ADD: gravity field info
 110616: CHG: gravity radius, inside planets and stars gravity is now linear fading (~r) instead of singularity (~1/r^2)
+110617: ADD: build.log
+110617: CHG: breaking now used adjustable thrust power
+110617: ADD: autopilot to orbiting gravity-dominant object (currently "cheating", as it can use max thrust)
 
 
 DONE:
@@ -36,10 +39,11 @@ DONE:
 + all physics to double
 + thrust should be different - interplanet travels and adjusting orbit requires different thrust
 + estimation of gravity domination
++ adjust autopilot to reduce thrust if speed is low
++ autopilot to orbiting gravity-dominant object
 
 TODO
--1autopilot to orbiting gravity-dominant object
--2map of star system
+-3map of star system
 -?orbiting of gravity-domination body by orbital parameters, not simple euler
 - camera further from system, tham 4M? (degree=4000)
 - autopilot to travel to specific point
@@ -63,6 +67,7 @@ A/D - rotate
 W/S - thrust
 Space - breaking (autopilot) relative to distant stars
 1/2/3/4 - different thrust levels (1 - highest, 4 - lowest)
+O - orbiting (around object which product max graviry force at player's ship)
 Up/Down - zoom
 
 */
@@ -98,7 +103,8 @@ typedef core::vector3d<f64>  vector3d;
 text_string print_f64(f64 value, wchar_t* format)
 {
 	wchar_t tmp[255];
-	swprintf_s(tmp, 255, format, value);
+	//swprintf_s(tmp, 255, format, value);
+	swprintf(tmp, 255, format, value);
 	return tmp;
 }
 
@@ -114,6 +120,7 @@ held down, and so we will remember the current state of each key.
 */
 
 class GamePhysics;
+class SpaceObject;
 
 class MyEventReceiver : public IEventReceiver
 {
@@ -145,6 +152,17 @@ private:
 	bool KeyIsDown[KEY_KEY_CODES_COUNT];
 };
 
+class GravityInfo {
+	public:
+		text_string print();
+
+		//text_string printableInfo;
+		f64 maxGravity;
+		SpaceObject* maxGravityObject;
+		f64 secondMaxGravity;
+		SpaceObject* secondMaxGravityObject;
+};
+
 
 //SpaceObject - is any object in current visible space
 class SpaceObject {
@@ -172,7 +190,7 @@ class SpaceObject {
 		f64 GetThrust() {return thrustPower;}
 		f64 GetMass() {return mass;}
 		vector3d GetPosition() {return position;}
-		vector3d GetSpeed() {return speed;}
+		vector3d GetSpeed();
 		vector3d GetDirection();
 		text_string GetName() {return name;}
 		//f32 GetMaxThrust() {return maxThrust;}
@@ -202,6 +220,8 @@ class SpaceObject {
 		void SetControl(f64 newValue, ControlType type);
 
 		void AutopilotBreak();
+		void AutopilotOrbiting();
+		void AutopilotSetSpeed(vector3d requiredSpeed);
 
 		//updating
 		void UpdatePhysics(f64 time);
@@ -332,6 +352,8 @@ void SpaceObject::SetControl(f64 newValue, ControlType type)
 	}
 }
 
+/*
+
 //Breaking relative to distant-stars
 void SpaceObject::AutopilotBreak()
 {
@@ -341,9 +363,9 @@ void SpaceObject::AutopilotBreak()
 	speedNormalized.normalize();
 	f64 whereToRotate;
 	//f32 speedValeu
-	if (speed.getLength()<0.5)
+	if (speed.getLength()<0.01)
 	{
-		speed = vector3d(0,0,0);
+		speed = vector3d(0,0,0);//Force nullify speed
 		return;
 	}
 	//whereToRotate = direction.crossProduct(speedNormalized).Z;
@@ -353,8 +375,62 @@ void SpaceObject::AutopilotBreak()
 	if (abs(whereToRotate)<0.005 && direction.dotProduct(speed)<0)
 	{
 		//TODO: change CoeffDegreesToRadians to another
-		rotation = 180+atan2(speed.Y,speed.X)/CoeffDegreesToRadians;
-		SetControl(1,CONTROL_THRUST_RELATIVE);
+		rotation = 180+atan2(speed.Y,speed.X)/CoeffDegreesToRadians;//Force set rotation to required angle
+
+		f64 k=1;
+		if (speed.getLength()<maxThrust*0.05)//this assumes minimum frame interval is 20 ms, 
+		{
+			//TODO: get minimum frame interval from physics or game?
+			k = 200.0*speed.getLength()/maxThrust;//adjust breaking thrust power to partial of speed
+		}
+		SetControl(k,CONTROL_THRUST_RELATIVE);
+		return;
+	}
+
+	if (whereToRotate>0)
+	{
+		SetControl(-1,CONTROL_ROTATION_SPEED_RELATIVE);
+	}
+	else if (whereToRotate<0)
+	{
+		SetControl(1,CONTROL_ROTATION_SPEED_RELATIVE);
+	}
+}*/
+
+void SpaceObject::AutopilotBreak()
+{
+	AutopilotSetSpeed(vector3d(0));
+}
+
+//Breaking relative to distant-stars
+void SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
+{
+	vector3d direction = GetDirection();
+	vector3d changeSpeed = requiredSpeed-speed;
+	//vector3d speed = GetSpeed();
+	vector3d speedNormalized = changeSpeed;
+	speedNormalized.normalize();
+	f64 whereToRotate;
+	//f32 speedValeu
+	if (changeSpeed.getLength()<0.01)
+	{
+		speed = requiredSpeed;
+		return;
+	}
+	whereToRotate = direction.Y*speedNormalized.X - direction.X*speedNormalized.Y;
+
+	if (abs(whereToRotate)<0.005 && direction.dotProduct(changeSpeed)>0)
+	{
+		//TODO: change CoeffDegreesToRadians to another
+		rotation = atan2(changeSpeed.Y,changeSpeed.X)/CoeffDegreesToRadians;//Force set rotation to required angle
+
+		f64 k=1;
+		if (changeSpeed.getLength()<k*maxThrust*0.05)//this assumes minimum frame interval is 20 ms, 
+		{
+			//TODO: get minimum frame interval from physics or game?
+			k = 200.0*changeSpeed.getLength()/maxThrust;//adjust breaking thrust power to partial of speed
+		}
+		SetControl(k,CONTROL_THRUST_RELATIVE);
 		return;
 	}
 
@@ -367,6 +443,7 @@ void SpaceObject::AutopilotBreak()
 		SetControl(1,CONTROL_ROTATION_SPEED_RELATIVE);
 	}
 }
+
 
 void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 {
@@ -389,7 +466,7 @@ class GamePhysics {
 		void AddObject(SpaceObject* newObject);
 		void UpdateMarkers(f64 cameraDistance);
 		vector3d GetGravityAcceleration(vector3d location);
-		text_string GetGravityInfo(vector3d location);
+		GravityInfo* GetGravityInfo(vector3d location);
 	private:
 		core::array<SpaceObject*> SpaceObjectList;
 };
@@ -481,6 +558,38 @@ void SpaceObject::UpdatePhysics(f64 time)
 	}
 }
 
+vector3d SpaceObject::GetSpeed()
+{
+	switch (motionType)
+	{
+	case MOTION_ORBITAL:
+		{
+			//simple circular orbiting
+			if (orbitalPeriod!=0)
+			{
+				f64 Phase = orbitalEpochPhase;
+				f64 speedValue = orbitalRadius*6.2831853/orbitalPeriod;
+				Phase+=360.0*physics->globalTime/orbitalPeriod;
+				speed.X = -sin(Phase*CoeffDegreesToRadians)*speedValue;
+				speed.Y = cos(Phase*CoeffDegreesToRadians)*speedValue;
+				speed.Z = 0;
+				if (orbitingObject!=0)
+					speed+=orbitingObject->GetSpeed();
+			}
+			else
+			{
+				speed = vector3d(0);
+			}
+		}
+
+		break;
+	default:
+		break;
+	}
+	return speed;
+}
+
+
 vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 {
 	vector3d vectorDirection = position-location;
@@ -514,11 +623,13 @@ vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 	return acceleration;
 }
 
-text_string GamePhysics::GetGravityInfo(vector3d location)
+GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 {
 	u32 i;
-	text_string gravityInfo(L"");
+	//text_string gravityInfo(L"");
+	GravityInfo* gravInfo = new GravityInfo();
 	f64 gravity;
+	
 	f64 maxGravity=-1;
 	SpaceObject* maxGravityObject =0;
 	f64 secondMaxGravity=-1;
@@ -545,6 +656,18 @@ text_string GamePhysics::GetGravityInfo(vector3d location)
 				secondMaxGravityObject = SpaceObjectList[i];
 			}
 		}
+
+	//gravInfo->printableInfo = gravityInfo;
+	gravInfo->maxGravity = maxGravity;
+	gravInfo->maxGravityObject = maxGravityObject;
+	gravInfo->secondMaxGravity = secondMaxGravity;
+	gravInfo->secondMaxGravityObject = secondMaxGravityObject;
+	return gravInfo;
+}
+
+text_string GravityInfo::print()
+{
+	text_string gravityInfo(L"");
 	if (maxGravityObject)
 	{
 		gravityInfo = L"Max gravity from: ";
@@ -552,11 +675,11 @@ text_string GamePhysics::GetGravityInfo(vector3d location)
 		if (secondMaxGravityObject)
 		{
 			f64 percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
-			gravityInfo += " (";
+			gravityInfo += L" (";
 			gravityInfo += print_f64(percent,L"%.02f");
 			gravityInfo += L"%)\r\nNext gravity from: ";
 			gravityInfo += secondMaxGravityObject->GetName();
-			gravityInfo += " (";
+			gravityInfo += L" (";
 			//gravityInfo += (100.0-percent);
 			gravityInfo += print_f64(100.0-percent,L"%.02f");
 			gravityInfo += L"% / ";
@@ -660,7 +783,7 @@ void StarSystemConstructor::MakeSimpleSystem()
 		else
 		{
 			planet = MakePlanet(planetSizes[i]*6.37);//1000km in 1 unit
-			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*i*20.0);//1000 seconds in 1
+			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*20.0);//1000 seconds in 1
 		}
 		//if (i==0)
 		{
@@ -872,6 +995,39 @@ void StarSystemConstructor::AddMarker(SpaceObject* toObject, u32 type)
 	}
 	toObject->SetMarkerNode(sceneNode2,sizeMarker);
 }
+
+//Breaking relative to distant-stars
+void SpaceObject::AutopilotOrbiting()
+{
+	
+	f64 requiredRelativeSpeed;
+	vector3d maxGravityAcceleration;
+	vector3d relativePosition;
+	vector3d relativeSpeed;
+	vector3d requiredSpeed;
+	GravityInfo* gravInfo = physics->GetGravityInfo(position);
+	if (!gravInfo->maxGravityObject) //no dominant object - no orbiting
+		return;
+	//speed = gravInfo->maxGravityObject->GetSpeed();
+	relativePosition = position - gravInfo->maxGravityObject->GetPosition();
+	relativeSpeed = speed - gravInfo->maxGravityObject->GetSpeed();
+	maxGravityAcceleration = gravInfo->maxGravityObject->GetGravityAcceleration(position);
+	requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); //via centro-escape acceleration
+
+	//TODO: add check for opposite direction, it could be closer to current speed
+
+	requiredSpeed.X = relativePosition.Y;//perpendicular to relative position
+	requiredSpeed.Y = -relativePosition.X;
+	requiredSpeed.Z = 0;
+	requiredSpeed.normalize();//1 unit length
+	requiredSpeed*= requiredRelativeSpeed;//length 
+	requiredSpeed+=gravInfo->maxGravityObject->GetSpeed();//absolute value
+
+	//debug: simple set speed to required value
+	//speed = requiredSpeed;
+	AutopilotSetSpeed(requiredSpeed);
+}
+
 
 class DG_Game {
 
@@ -1175,6 +1331,8 @@ void DG_Game::Update() {
 
 	if (receiver.IsKeyDown(irr::KEY_SPACE))
 		playerShip->AutopilotBreak();
+	if (receiver.IsKeyDown(irr::KEY_KEY_O))
+		playerShip->AutopilotOrbiting();
 		
 
 	//playerShip->thrustPower = thrust*MOVEMENT_SPEED*5.f;
@@ -1226,7 +1384,7 @@ void DG_Game::Update() {
 	debug_text += (playerSpeed/300000.0);
 	debug_text += " c; ";
 	debug_text += "\r\n";
-	debug_text += gamePhysics->GetGravityInfo(playerShip->GetPosition());
+	debug_text += gamePhysics->GetGravityInfo(playerShip->GetPosition())->print();
 	simpleTextToDisplay->setText(debug_text.c_str());
 
 	//playerShip->position += playerShip->speed;
