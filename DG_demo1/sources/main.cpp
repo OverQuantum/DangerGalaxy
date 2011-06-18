@@ -30,6 +30,7 @@ Demo made from Irrlicht sample
 110617: ADD: build.log
 110617: CHG: breaking now used adjustable thrust power
 110617: ADD: autopilot to orbiting gravity-dominant object (currently "cheating", as it can use max thrust)
+110618: ADD: obrital params (semi-major axis and e)
 
 
 DONE:
@@ -43,6 +44,7 @@ DONE:
 + autopilot to orbiting gravity-dominant object
 
 TODO
+-1display more info about orbit - shape, min/max distance (with fall estimation), period
 -3map of star system
 -?orbiting of gravity-domination body by orbital parameters, not simple euler
 - camera further from system, tham 4M? (degree=4000)
@@ -60,6 +62,7 @@ QUESTIONS
 - time game koefficient (to pass star system in a matter of minutes/seconds) [current: 1000]
 - size game koefficient (planet size in a relation to its orbits) [current: NO]
 - size game logarithm (from hypergians stars to small moons/asteroids should be seen)   [current: NO]
+- PI, G and other constant - where they should hold?
 
 
 CONTROL:
@@ -87,6 +90,8 @@ using namespace irr;
 
 #define RESOURCE_PATH	"media"
 #define CoeffDegreesToRadians  0.01745329
+#define TWO_PI 6.2831853
+#define G_CONSTANT 66.7384
 
 //typedef core::vector3df vector3d;
 
@@ -161,6 +166,13 @@ class GravityInfo {
 		SpaceObject* maxGravityObject;
 		f64 secondMaxGravity;
 		SpaceObject* secondMaxGravityObject;
+
+		void UpdateGravityInfoOrbit(SpaceObject* orbitingObject);
+
+		//Kepler orbit elements (around maxGravityObject)
+		f64 orbitSemimajorAxis;//Semimajor axis
+		f64 orbitEccentricity;//Eccentricity
+		f64 orbitArgumentPeriapsis;//Argument of periapsis
 };
 
 
@@ -458,7 +470,6 @@ void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 	}
 }
 
-
 class GamePhysics {
 	public:
 		f64 globalTime;
@@ -558,6 +569,43 @@ void SpaceObject::UpdatePhysics(f64 time)
 	}
 }
 
+void GravityInfo::UpdateGravityInfoOrbit(SpaceObject* orbitingObject)
+{
+	f64 invAxis;//q = 1/a, where a - Semimajor axis
+	f64 specificRAMomentum;//Specific relative angular momentum 
+
+	if (!maxGravityObject)
+		return;
+
+	//Semimajor axis, a, is calc by vis-viva equation: 1/a = 2/r - v*v/G(M+m) = q
+	vector3d relativePosition, relativeSpeed;
+
+	relativePosition = orbitingObject->GetPosition() - maxGravityObject->GetPosition();
+	relativeSpeed = orbitingObject->GetSpeed() - maxGravityObject->GetSpeed();
+
+	invAxis = 2.0/relativePosition.getLength() - relativeSpeed.getLengthSQ()/(G_CONSTANT*maxGravityObject->GetMass());
+
+	//Eccentricity, e, is calc using specific relative angular momentum: e = sqrt(1+h*h*q*q/2), where h=|H|, q = 1/a
+	specificRAMomentum = relativeSpeed.X * relativePosition.Y - relativeSpeed.Y * relativePosition.X;
+
+	if (invAxis != 0.0)
+	{
+		orbitSemimajorAxis = 1.0/invAxis;
+	}
+	else
+	{
+		orbitSemimajorAxis = 0.0;
+	}
+	//orbitEccentricity = sqrt(1+specificRAMomentum*specificRAMomentum*invAxis*invAxis*.5);//not work
+
+	//TODO: optimize G_CONSTANT*maxGravityObject->GetMass() combined with previous use
+	orbitEccentricity = sqrt(1-specificRAMomentum*specificRAMomentum*invAxis/(G_CONSTANT*maxGravityObject->GetMass()));
+
+
+	//orbitEccentricity = -2;//not calced
+
+}
+
 vector3d SpaceObject::GetSpeed()
 {
 	switch (motionType)
@@ -568,7 +616,7 @@ vector3d SpaceObject::GetSpeed()
 			if (orbitalPeriod!=0)
 			{
 				f64 Phase = orbitalEpochPhase;
-				f64 speedValue = orbitalRadius*6.2831853/orbitalPeriod;
+				f64 speedValue = orbitalRadius*TWO_PI/orbitalPeriod;
 				Phase+=360.0*physics->globalTime/orbitalPeriod;
 				speed.X = -sin(Phase*CoeffDegreesToRadians)*speedValue;
 				speed.Y = cos(Phase*CoeffDegreesToRadians)*speedValue;
@@ -597,14 +645,14 @@ vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 	if (distance<gravityMinRadius)
 	{
 		//return vector3d(0);//simply nothing
-		return 66.7*vectorDirection*mass/(gravityMinRadius*gravityMinRadius*gravityMinRadius);
+		return G_CONSTANT*vectorDirection*mass/(gravityMinRadius*gravityMinRadius*gravityMinRadius);
 	}
 	//G = 6.67384(80)*10^-11 N * (m/kg)^2 = .. [m*m*m/kg*s^2]
 	//distances is in 1000 km, so k=10^6  
 	//time is in 1000 seconds - k=1000
 	//mass is in 10^24 kg - k=10^24
 	//Ggame = G * 10^-18/(10^-24 * 10^-6) = G * 10^12 = 
-	return 66.7*vectorDirection*mass/(distance*distance*distance);
+	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance);
 }
 
 
@@ -634,7 +682,7 @@ GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 	SpaceObject* maxGravityObject =0;
 	f64 secondMaxGravity=-1;
 	SpaceObject* secondMaxGravityObject =0;
-
+	//f64 orbitSemimajorAxis, orbitEccentricity;
 
 	for (i=0;i<SpaceObjectList.size();i++)
 		if (SpaceObjectList[i]->IsEmittingGravity())
@@ -662,6 +710,9 @@ GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 	gravInfo->maxGravityObject = maxGravityObject;
 	gravInfo->secondMaxGravity = secondMaxGravity;
 	gravInfo->secondMaxGravityObject = secondMaxGravityObject;
+	gravInfo->orbitSemimajorAxis = -2;
+	gravInfo->orbitEccentricity = -2;
+	gravInfo->orbitArgumentPeriapsis = -2;//not calced
 	return gravInfo;
 }
 
@@ -676,15 +727,26 @@ text_string GravityInfo::print()
 		{
 			f64 percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
 			gravityInfo += L" (";
+			gravityInfo += print_f64(log(maxGravity),L"%.02f");
+			gravityInfo += L" dgr ";//dgr: logarithm of gravity acceleration, 0 dgr = 1 m/s*s
 			gravityInfo += print_f64(percent,L"%.02f");
-			gravityInfo += L"%)\r\nNext gravity from: ";
+			gravityInfo += L"%)\r\n";
+			gravityInfo += L"Orbit: ";
+			gravityInfo += print_f64(orbitSemimajorAxis,L"%.02f");
+			gravityInfo += L", e: ";
+			gravityInfo += print_f64(orbitEccentricity,L"%f");
+			gravityInfo += L"\r\nNext gravity from: ";
 			gravityInfo += secondMaxGravityObject->GetName();
 			gravityInfo += L" (";
+			gravityInfo += print_f64(log(secondMaxGravity),L"%.02f");
+			gravityInfo += L" dgr ";
 			//gravityInfo += (100.0-percent);
 			gravityInfo += print_f64(100.0-percent,L"%.02f");
-			gravityInfo += L"% / ";
-			gravityInfo += print_f64(log(secondMaxGravity)-log(maxGravity),L"%.02f");
-			gravityInfo += L" dgr)";
+			gravityInfo += L"%)";
+
+			//gravityInfo += L"% / ";
+			//gravityInfo += print_f64(log(secondMaxGravity)-log(maxGravity),L"%.02f");
+			//gravityInfo += L" dgr)";
 		}
 	}
 	else
@@ -783,7 +845,7 @@ void StarSystemConstructor::MakeSimpleSystem()
 		else
 		{
 			planet = MakePlanet(planetSizes[i]*6.37);//1000km in 1 unit
-			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*20.0);//1000 seconds in 1
+			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*i*20.0);//1000 seconds in 1
 		}
 		//if (i==0)
 		{
@@ -1005,22 +1067,35 @@ void SpaceObject::AutopilotOrbiting()
 	vector3d relativePosition;
 	vector3d relativeSpeed;
 	vector3d requiredSpeed;
+
+	//Get gravity info from game physics
 	GravityInfo* gravInfo = physics->GetGravityInfo(position);
 	if (!gravInfo->maxGravityObject) //no dominant object - no orbiting
 		return;
-	//speed = gravInfo->maxGravityObject->GetSpeed();
+	
 	relativePosition = position - gravInfo->maxGravityObject->GetPosition();
 	relativeSpeed = speed - gravInfo->maxGravityObject->GetSpeed();
+
+	//get gravity acceleration from dominant gravity object
 	maxGravityAcceleration = gravInfo->maxGravityObject->GetGravityAcceleration(position);
-	requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); //via centro-escape acceleration
 
-	//TODO: add check for opposite direction, it could be closer to current speed
+	//required speed value - via centro-escape acceleration
+	requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); 
 
-	requiredSpeed.X = relativePosition.Y;//perpendicular to relative position
+	//required speed - perpendicular to relative position
+	requiredSpeed.X = relativePosition.Y;
 	requiredSpeed.Y = -relativePosition.X;
 	requiredSpeed.Z = 0;
-	requiredSpeed.normalize();//1 unit length
-	requiredSpeed*= requiredRelativeSpeed;//length 
+
+	//check opposite direction, it could be closer to current speed
+	if (relativeSpeed.dotProduct(requiredSpeed)<0)
+	{//yes, this direction is opposite to current speed vector
+		requiredSpeed.X=-requiredSpeed.X;//reverse required speed
+		requiredSpeed.Y=-requiredSpeed.Y;
+	}
+
+	requiredSpeed.normalize();//normalize - to get vector of 1 unit length
+	requiredSpeed*=requiredRelativeSpeed;//use required speed value
 	requiredSpeed+=gravInfo->maxGravityObject->GetSpeed();//absolute value
 
 	//debug: simple set speed to required value
@@ -1378,13 +1453,17 @@ void DG_Game::Update() {
 
 	text_string debug_text(L"Speed: ");
 	f64 playerSpeed;
+	GravityInfo* gravInfo;
+	gravInfo = gamePhysics->GetGravityInfo(playerShip->GetPosition());
+	gravInfo->UpdateGravityInfoOrbit(playerShip);
+
 	playerSpeed = playerShip->GetSpeed().getLength();
 	debug_text += playerSpeed;
 	debug_text += " km/s\r\n";
 	debug_text += (playerSpeed/300000.0);
 	debug_text += " c; ";
 	debug_text += "\r\n";
-	debug_text += gamePhysics->GetGravityInfo(playerShip->GetPosition())->print();
+	debug_text += gravInfo->print();
 	simpleTextToDisplay->setText(debug_text.c_str());
 
 	//playerShip->position += playerShip->speed;
