@@ -1,8 +1,10 @@
 /** 
-Demo made from Irrlicht sample
+DangerGalaxy Demo #1
+made from Irrlicht sample "04.Movement"
 */
 
 /*
+prehistory:
 110510: SGU ended
 110512: SAIS played
 110512: Project Idea, (13.05.2011 ~01:30:00 MSK)
@@ -10,6 +12,7 @@ Demo made from Irrlicht sample
 110531: github repo created
 110602: Demo started
 
+coding demo1:
 110608: ADD: StarSystemConstructor, ->MakeStar, ->MakePlanet
 110609: CHG: a bit better star lights
 110610: ADD: surface of stars - without lighting each other, better lighting of planets
@@ -31,6 +34,8 @@ Demo made from Irrlicht sample
 110617: CHG: breaking now used adjustable thrust power
 110617: ADD: autopilot to orbiting gravity-dominant object (currently "cheating", as it can use max thrust)
 110618: ADD: obrital params (semi-major axis and e)
+110619: ADD: map of starsystem
+110620: ADD: zoom on map, labels on map (yet looks terrible)
 
 
 DONE:
@@ -42,22 +47,29 @@ DONE:
 + estimation of gravity domination
 + adjust autopilot to reduce thrust if speed is low
 + autopilot to orbiting gravity-dominant object
++ map of star system
 
 TODO
--1display more info about orbit - shape, min/max distance (with fall estimation), period
--3map of star system
+-0elimitate discretization effect - see at orbit of Pluto
+-1zoom map around arbitrary point, starting with ship
+-2remove SetDevice e.t.c. from *View classes - use GetDevice from DG_Game object, provided by SetRoot
+-3display more info about orbit - shape, min/max distance (with fall estimation), period
 -?orbiting of gravity-domination body by orbital parameters, not simple euler
-- camera further from system, tham 4M? (degree=4000)
+- camera further from system, tham 4M? (degree=4000) - requires remastering scene
+- backcull of stars - to display then ship inside
 - autopilot to travel to specific point
 - corona of star and atmosphere of planets by decal/billboard/etc
 - handling of errors
 ? playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 minor:
+- remove overlapping of labels on map (how?)
 - better speed indicator
 - exponential fading of light sources (?)
 
 
 QUESTIONS
+- how display map info above map - gui or adjust billboard?
+- limit FPS to 200/100/?
 - how to draw ship passing stars and planets?  [thinking: collision]
 - time game koefficient (to pass star system in a matter of minutes/seconds) [current: 1000]
 - size game koefficient (planet size in a relation to its orbits) [current: NO]
@@ -72,6 +84,11 @@ Space - breaking (autopilot) relative to distant stars
 1/2/3/4 - different thrust levels (1 - highest, 4 - lowest)
 O - orbiting (around object which product max graviry force at player's ship)
 Up/Down - zoom
+Tab - switch to map
+
+CONTROL on map:
+Up/Down - zoom
+Esc - back to RealSpace
 
 */
 
@@ -102,18 +119,25 @@ typedef core::stringw   text_string;
 //DangerGalaxy works in double, so f64
 typedef core::vector3d<f32>  vector3df;
 typedef core::vector3d<f64>  vector3d;
+typedef scene::ISceneNode    SceneNode;
 
 //#define vector3d core::vector3df
 
 text_string print_f64(f64 value, wchar_t* format)
 {
 	wchar_t tmp[255];
-	//swprintf_s(tmp, 255, format, value);
 	swprintf(tmp, 255, format, value);
 	return tmp;
 }
 
 
+
+class GamePhysics;
+class SpaceObject;
+class DG_Game;
+class RealSpaceView;
+class MapSpaceView;
+class GameView;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -123,10 +147,6 @@ irr::IEventReceiver::OnEvent(). This method will be called by the engine once
 when an event happens. What we really want to know is whether a key is being
 held down, and so we will remember the current state of each key.
 */
-
-class GamePhysics;
-class SpaceObject;
-
 class MyEventReceiver : public IEventReceiver
 {
 public:
@@ -208,14 +228,14 @@ class SpaceObject {
 		//f32 GetMaxThrust() {return maxThrust;}
 		//f32 GetMaxRotationThrust() {return maxRotationThrust;}
 
-		scene::ISceneNode* GetNode() {return sceneNode;}
+		SceneNode* GetNode() {return sceneNode;}
 
 		//setters
 		void SetPosition(vector3d newPos) {position = newPos;}
 		void SetSpeed(vector3d newSpeed) {speed = newSpeed;}
 		void SetRotation(f64 newRotation) {rotation = newRotation;}
-		void SetNode(scene::ISceneNode * node) {sceneNode = node;}
-		void SetMarkerNode(scene::ISceneNode * node, f64 size) {sceneMarkerNode = node; sizeMarker = size;}
+		void SetNode(SceneNode * node) {sceneNode = node;}
+		void SetMarkerNode(SceneNode * node, f64 size) {sceneMarkerNode = node; sizeMarker = size;}
 		void SetMotionType(MotionType newType) {motionType = newType;}
 		void SetOrbitalParams(SpaceObject* parent, f64 radius, f64 Period, f64 EpochPhase);
 		void SetPhysics(GamePhysics* physicsOwner) {physics = physicsOwner;}
@@ -266,9 +286,9 @@ class SpaceObject {
 		vector3d speed;//current motion speed, relative to "background stars"
 		f64 rotation;//rotation angle, degrees (zero is direction to down)
 
-		scene::ISceneNode * sceneNode; //Irrlich renderable object
+		SceneNode * sceneNode; //Irrlich renderable object
 		//scene::IBillboardSceneNode * sceneMarkerNode; //Irrlich renderable object - for displaying from a far
-		scene::ISceneNode * sceneMarkerNode; //Irrlich renderable object - for displaying from a far
+		SceneNode * sceneMarkerNode; //Irrlich renderable object - for displaying from a far
 		//vector3d acceleration; //
 };
 
@@ -476,8 +496,10 @@ class GamePhysics {
 		void Update(f64 time);
 		void AddObject(SpaceObject* newObject);
 		void UpdateMarkers(f64 cameraDistance);
+		void UpdateMapMarkers(f64 mapScale);
 		vector3d GetGravityAcceleration(vector3d location);
 		GravityInfo* GetGravityInfo(vector3d location);
+		void MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView);
 	private:
 		core::array<SpaceObject*> SpaceObjectList;
 };
@@ -500,6 +522,10 @@ void GamePhysics::UpdateMarkers(f64 cameraDistance)
 	{
 		SpaceObjectList[i]->UpdateMarkerNode(cameraDistance);
 	}
+}
+
+void GamePhysics::UpdateMapMarkers(f64 mapScale)
+{
 }
 
 void GamePhysics::AddObject(SpaceObject* newObject)
@@ -883,7 +909,7 @@ void StarSystemConstructor::MakeSimpleSystem()
 SpaceObject* StarSystemConstructor::MakeStar(f64 radius, s32 polygons)
 {
 	SpaceObject* newStar = new SpaceObject();
-	scene::ISceneNode * sceneNode;
+	SceneNode * sceneNode;
 
 	sceneNode = sceneManager->addSphereSceneNode((f32)radius,polygons);
 	if (sceneNode)
@@ -952,7 +978,7 @@ SpaceObject* StarSystemConstructor::MakeStar(f64 radius, s32 polygons)
 SpaceObject* StarSystemConstructor::MakePlanet(f64 radius, s32 polygons)
 {
 	SpaceObject* newPlanet = new SpaceObject();
-	scene::ISceneNode * sceneNode;
+	SceneNode * sceneNode;
 
 	sceneNode = sceneManager->addSphereSceneNode((f32)radius,polygons);
 	if (sceneNode)
@@ -995,7 +1021,7 @@ SpaceObject* StarSystemConstructor::MakePlanet(f64 radius, s32 polygons)
 
 SpaceObject* StarSystemConstructor::MakeShip()
 {
-	scene::ISceneNode* node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
+	SceneNode* node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
 	if (node)
 	{
 		//node->setPosition(core::vector3df(0,0,30));
@@ -1027,8 +1053,8 @@ SpaceObject* StarSystemConstructor::MakeShip()
 void StarSystemConstructor::AddMarker(SpaceObject* toObject, u32 type)
 {
 	//scene::IBillboardSceneNode * sceneNode2 = sceneManager->addBillboardSceneNode(toObject->GetNode());
-	//scene::ISceneNode * sceneNode2 = sceneManager->addBillboardSceneNode(toObject->GetNode());
-	scene::ISceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+	//SceneNode * sceneNode2 = sceneManager->addBillboardSceneNode(toObject->GetNode());
+	SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
 	f64 sizeMarker;
 
 	if (sceneNode2)
@@ -1103,7 +1129,6 @@ void SpaceObject::AutopilotOrbiting()
 	AutopilotSetSpeed(requiredSpeed);
 }
 
-
 class DG_Game {
 
 	public:
@@ -1111,11 +1136,9 @@ class DG_Game {
 		int Init(int Count, char **Arguments);
 		void Update();
 		void Close();
-		f64 GetCameraDistance() {return cameraDistance;}
-		s32 cameraDistanceDegree;
 
-		void UpdateCameraDistance();
-
+		void ActivateMap();
+		void ActivateRealSpace();
 		
 		//void ChangeState(StateClass *State);
 		//StateClass *GetState() { return State; }
@@ -1125,74 +1148,85 @@ class DG_Game {
 		//float GetTimeStep() { return TimeStep; }
 		//void ResetTimer();
 
+		//MAP
+		s32 cameraMapDistanceDegree;
+
 	private:
-		f64 cameraDistance;
 		//f64 MOVEMENT_SPEED;
 		// Flags
 		IrrlichtDevice* device;
 		u32 then;
 		GamePhysics * gamePhysics;
 		bool Done, MouseWasLocked;
-		scene::ISceneNode * node;
-		scene::ICameraSceneNode * camera;
+		SceneNode * node;
 		MyEventReceiver receiver;
 		scene::ISceneManager* smgr;
 		video::IVideoDriver* driver;
 		int lastFPS;
 
-		SpaceObject * playerShip;
-		f64 playerThrust;
-		scene::IParticleSystemSceneNode * playerThrustParticles;
-		scene::IParticleEmitter*  playerThrustEmitter;
-		//scene::IParticleSystemSceneNode * playerThrust;
-		//scene::IParticleEmitter*  motionIndicatorEmitter;
-		scene::IParticleSystemSceneNode* motionIndicator;
-		gui::IGUIStaticText* simpleTextToDisplay;
+		int gameMode;//0 - flying, 1 - map
+
+
+		RealSpaceView* RealSpace;
+		MapSpaceView* SectorMap;
+
+		GameView* activeView;
 };
 
 
-/*
-void SpaceObject::Accelerate(vector3d acceleration, f32 time)
+class GameView
 {
-	speed += acceleration*time;
-}
+public:
+	virtual void Init() {};
+	virtual void Update(f64 time) {};
+	virtual void Close() {};
 
-void SpaceObject::LinearMotion(f32 time)
+	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
+	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
+	void SetDevice(IrrlichtDevice* newDevice) {device = newDevice;}
+	void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
+	void SetEventReceiver(MyEventReceiver* newReceiver) {EventReceiver = newReceiver;}
+	void SetPhysics(GamePhysics* newPhysics) {gamePhysics = newPhysics;}
+
+protected:
+	DG_Game* gameRoot;
+	GamePhysics * gamePhysics;
+	MyEventReceiver* EventReceiver;
+	IrrlichtDevice* device;
+	scene::ISceneManager* sceneManager;
+	video::IVideoDriver* videoDriver;
+};
+
+class RealSpaceView : public GameView
 {
-	position += speed*time;
-}*/
+public:
+	void Init();
+	void Update(f64 time);
+	void Close();
 
+	f64 GetCameraDistance() {return cameraDistance;}
+	s32 cameraDistanceDegree;
 
+	void UpdateCameraDistance();
 
+private:
+	f64 cameraDistance;
 
+	SpaceObject * playerShip;
+	f64 playerThrust;
 
-// Processes parameters and initializes the game
-int DG_Game::Init(int Count, char **Arguments) {
-	// ask user for driver
-	
-	gamePhysics = new GamePhysics;
-	gamePhysics->globalTime = 0;
+	scene::ICameraSceneNode * camera;
+	scene::IParticleSystemSceneNode * playerThrustParticles;
+	scene::IParticleEmitter*  playerThrustEmitter;
+	//scene::IParticleSystemSceneNode * playerThrust;
+	//scene::IParticleEmitter*  motionIndicatorEmitter;
+	scene::IParticleSystemSceneNode* motionIndicator;
+	gui::IGUIStaticText* simpleTextToDisplay;
 
+};
 
-	/*
-	video::E_DRIVER_TYPE driverType=driverChoiceConsole();
-	if (driverType==video::EDT_COUNT)
-		return 1;
-	*/
-	//driverType = video::EDT_OPENGL;
-
-	// create device
-
-	//IrrlichtDevice* device = createDevice(driverType,
-	device = createDevice(video::EDT_OPENGL,
-			core::dimension2d<u32>(1024, 768), 16, false, false, false, &receiver);
-
-	if (device == 0)
-		return 1; // could not create selected driver.
-
-	driver = device->getVideoDriver();
-	smgr = device->getSceneManager();
-
+void RealSpaceView::Init()
+{
 	/*
 	Create the node which will be moved with the WSAD keys. We create a
 	sphere node, which is a built-in geometry primitive. We place the node
@@ -1214,7 +1248,7 @@ int DG_Game::Init(int Count, char **Arguments) {
 	//node = smgr->addAnimatedMeshSceneNode(smgr->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
 	
 	StarSystemConstructor* ssc = new StarSystemConstructor();
-	ssc->SetupConstructor(gamePhysics,smgr,driver);
+	ssc->SetupConstructor(gamePhysics,sceneManager,videoDriver);
 	ssc->MakeSimpleSystem();
 	
 
@@ -1231,7 +1265,7 @@ int DG_Game::Init(int Count, char **Arguments) {
 	// create a particle system
 
 	motionIndicator =
-		smgr->addParticleSystemSceneNode(false);
+		sceneManager->addParticleSystemSceneNode(false);
 
 	scene::IParticleEmitter* motionIndicatorEmitter = motionIndicator->createBoxEmitter(
 		core::aabbox3d<f32>(-100,-100,-20,100,100,20), // emitter size
@@ -1255,14 +1289,14 @@ int DG_Game::Init(int Count, char **Arguments) {
 	motionIndicator->setScale(core::vector3df(1,1,1));
 	motionIndicator->setMaterialFlag(video::EMF_LIGHTING, false);
 	motionIndicator->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
-	motionIndicator->setMaterialTexture(0, driver->getTexture(RESOURCE_PATH"/fire.bmp"));
+	motionIndicator->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire.bmp"));
 	motionIndicator->setMaterialType(video::EMT_TRANSPARENT_VERTEX_ALPHA);
 	/**/
 
 
 	// create a particle system 2
 	playerThrustParticles =
-		smgr->addParticleSystemSceneNode(false,playerShip->GetNode());
+		sceneManager->addParticleSystemSceneNode(false,playerShip->GetNode());
 
 	playerThrustEmitter = playerThrustParticles->createBoxEmitter(
 		core::aabbox3d<f32>(-1,-1,-1,1,1,1), // emitter size
@@ -1286,17 +1320,14 @@ int DG_Game::Init(int Count, char **Arguments) {
 	playerThrustParticles->setScale(core::vector3df(.01f,.01f,.01f));
 	playerThrustParticles->setMaterialFlag(video::EMF_LIGHTING, false);
 	playerThrustParticles->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
-	playerThrustParticles->setMaterialTexture(0, driver->getTexture(RESOURCE_PATH"/fire.bmp"));
+	playerThrustParticles->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire.bmp"));
 	playerThrustParticles->setMaterialType(video::EMT_TRANSPARENT_VERTEX_ALPHA);
 	//playerThrust->setVisible(false);
 	//ps2->setRotation(vector3d(0,0,90));
 	/**/
 
-
-
-
 	/*
-	scene::ISceneNode * node3 = smgr->addMeshSceneNode(smgr->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
+	SceneNode * node3 = smgr->addMeshSceneNode(smgr->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
 	if (node3)
 	{
 		node3->setScale(core::vector3df(3,3,3));
@@ -1305,10 +1336,7 @@ int DG_Game::Init(int Count, char **Arguments) {
 		node3->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
 	}*/
 
-
-
-
-	camera = smgr->addCameraSceneNode();
+	camera = sceneManager->addCameraSceneNode();
 	camera->setFOV(.7f);
 	//device->getCursorControl()->setVisible(false);
 
@@ -1326,88 +1354,59 @@ int DG_Game::Init(int Count, char **Arguments) {
 	simpleTextToDisplay->setOverrideColor(video::SColor(255, 255, 255, 0));
 	/**/
 
-	/*
-	We have done everything, so lets draw it. We also write the current
-	frames per second and the name of the driver to the caption of the
-	window.
-	*/
-	lastFPS = -1;
-
-	// In order to do framerate independent movement, we have to know
-	// how long it was since the last frame
-	then = device->getTimer()->getTime();
-
 	// This is the movemen speed in units per second.
 	//MOVEMENT_SPEED = 5.0;
 
-	smgr->saveScene("1.irrexp");
+	//smgr->saveScene("1.irrexp");
 	cameraDistanceDegree = 1000;
 	UpdateCameraDistance();
-
-
-	Done = false;
-
-	return 1;
 }
 
-// Updates the current state and runs the game engine
-void DG_Game::Update() {
-
-	// Run irrlicht engine
-	if(!device->run())
-	{
-		Done = true;
-		return;
-	}
-
-	// Work out a frame delta time.
-	const u32 now = device->getTimer()->getTime();
-	f64 frameDeltaTime = (f32)(now - then) / 1000.0; // Time in seconds
-	then = now;
-
-	if (frameDeltaTime>0.02) frameDeltaTime = 0.02;
-
-	/* Check if keys W, S, A or D are being held down, and move the
-	sphere node around respectively. */
+void RealSpaceView::Update(f64 frameDeltaTime)
+{
 	vector3d playerPosition;// = node->getPosition();
 	vector3df nodePosition;// = node->getPosition();
-	//vector3d thrust;
-	//f32 thrust=0;
-	//f32 rotate=0;
 
-	if(receiver.IsKeyDown(irr::KEY_KEY_W))
+	if(EventReceiver->IsKeyDown(irr::KEY_KEY_W))
 		//playerShip->speed.Y += MOVEMENT_SPEED * frameDeltaTime;
 		playerShip->SetControl(playerThrust,SpaceObject::CONTROL_THRUST_RELATIVE);
-	else if(receiver.IsKeyDown(irr::KEY_KEY_S))
+	else if(EventReceiver->IsKeyDown(irr::KEY_KEY_S))
 		//playerShip->speed.Y -= MOVEMENT_SPEED * frameDeltaTime;
 		playerShip->SetControl(-playerThrust,SpaceObject::CONTROL_THRUST_RELATIVE);
 	else
 		playerShip->SetControl(0.0,SpaceObject::CONTROL_THRUST_ABSOLUTE);
 
-	if(receiver.IsKeyDown(irr::KEY_KEY_A))
+	if(EventReceiver->IsKeyDown(irr::KEY_KEY_A))
 		//rotate = MOVEMENT_SPEED*30.f;
 		playerShip->SetControl(1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
 		//playerShip->speed.X -= MOVEMENT_SPEED * frameDeltaTime;
-	else if(receiver.IsKeyDown(irr::KEY_KEY_D))
+	else if(EventReceiver->IsKeyDown(irr::KEY_KEY_D))
 		playerShip->SetControl(-1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
 		//rotate = -MOVEMENT_SPEED*30.f;
 		//playerShip->speed.X += MOVEMENT_SPEED * frameDeltaTime;
 	else
 		playerShip->SetControl(0,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
 
-	if(receiver.IsKeyDown(irr::KEY_KEY_1))
+	if(EventReceiver->IsKeyDown(irr::KEY_KEY_1))
 		playerThrust = 1.0;
-	if(receiver.IsKeyDown(irr::KEY_KEY_2))
+	if(EventReceiver->IsKeyDown(irr::KEY_KEY_2))
 		playerThrust = 0.1;
-	if(receiver.IsKeyDown(irr::KEY_KEY_3))
+	if(EventReceiver->IsKeyDown(irr::KEY_KEY_3))
 		playerThrust = 0.01;
-	if(receiver.IsKeyDown(irr::KEY_KEY_4))
+	if(EventReceiver->IsKeyDown(irr::KEY_KEY_4))
 		playerThrust = 0.001;
 
-	if (receiver.IsKeyDown(irr::KEY_SPACE))
+	if (EventReceiver->IsKeyDown(irr::KEY_SPACE))
 		playerShip->AutopilotBreak();
-	if (receiver.IsKeyDown(irr::KEY_KEY_O))
+	if (EventReceiver->IsKeyDown(irr::KEY_KEY_O))
 		playerShip->AutopilotOrbiting();
+
+	if (EventReceiver->IsKeyDown(irr::KEY_TAB))
+	{
+		gameRoot->ActivateMap();
+		//gamePhysics->MakeMap(sceneManagerMap,videoDriver);
+		//gameMode = 1;
+	}
 		
 
 	//playerShip->thrustPower = thrust*MOVEMENT_SPEED*5.f;
@@ -1435,7 +1434,7 @@ void DG_Game::Update() {
 		playerThrustParticles->setEmitter(0);
 	}/**/
 
-	if(receiver.IsKeyDown(irr::KEY_UP))
+	if(EventReceiver->IsKeyDown(irr::KEY_UP))
 		if (cameraDistanceDegree<4000)
 		{
 			cameraDistanceDegree++;
@@ -1443,7 +1442,7 @@ void DG_Game::Update() {
 			UpdateCameraDistance();
 		}
 
-	if(receiver.IsKeyDown(irr::KEY_DOWN))
+	if(EventReceiver->IsKeyDown(irr::KEY_DOWN))
 		if (cameraDistanceDegree>0)
 		{
 			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
@@ -1494,14 +1493,310 @@ void DG_Game::Update() {
 	//nodePosition.Y = -nodePosition.Y;
 	camera->setPosition(nodePosition);
 
-
-	driver->beginScene(true, true, video::SColor(255,20,20,20));
+	videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
 	//driver->draw2DImage(driver->getTexture(RESOURCE_PATH"/starfield_1_medium.jpg"),core::vector2d<s32>(0,0));
-
-	smgr->drawAll(); // draw the 3d scene
+	sceneManager->drawAll(); // draw the 3d scene
 	device->getGUIEnvironment()->drawAll(); // draw the gui environment (the logo)
+	videoDriver->endScene();
+}
 
-	driver->endScene();
+void RealSpaceView::Close()
+{
+}
+
+void RealSpaceView::UpdateCameraDistance()
+{
+	//f32 camreDistance;
+	cameraDistance = 30.0*exp(cameraDistanceDegree*0.003);
+	camera->setFarValue((f32)(cameraDistance*2.0));
+	gamePhysics->UpdateMarkers(cameraDistance);
+
+}
+
+class MapObject
+{
+public:
+	void UpdatePosition(f64 mapScale);
+	void SetNode(SceneNode * node) {sceneNode = node;}
+	void SetOriginal(SpaceObject* object) {originalObject = object;}
+
+private:
+	SpaceObject* originalObject;
+	SceneNode* sceneNode; //Irrlich renderable object
+};
+
+void MapObject::UpdatePosition(f64 mapScale)
+{
+	if (sceneNode)
+	{
+		vector3d position = originalObject->GetPosition();
+		sceneNode->setPosition(vector3df((f32)(position.X*mapScale),(f32)(position.Y*mapScale),0));
+	}
+}
+
+
+class MapSpaceView : public GameView
+{
+public:
+	void Init();
+	void Update(f64 time);
+	void Close();
+	void AddObject(SpaceObject* spaceObject, SceneNode* node);
+
+	s32 cameraDistanceDegree;
+
+	void UpdateCameraDistance();
+
+private:
+	core::array<MapObject*> MapObjectList;
+};
+
+void MapSpaceView::AddObject(SpaceObject* spaceObject, SceneNode* node)
+{
+	MapObject* newMapObject = new MapObject();
+	newMapObject->SetNode(node);
+	newMapObject->SetOriginal(spaceObject);
+	MapObjectList.push_back(newMapObject);
+}
+
+
+void MapSpaceView::Init()
+{
+	MapObjectList.clear();
+	gamePhysics->MakeMap(sceneManager,videoDriver,this);
+	cameraDistanceDegree = 5500;
+	UpdateCameraDistance();
+}
+
+void MapSpaceView::Update(f64 time)
+{
+	if (EventReceiver->IsKeyDown(irr::KEY_ESCAPE))
+		gameRoot->ActivateRealSpace();
+	
+	
+	if(EventReceiver->IsKeyDown(irr::KEY_UP))
+		//if (cameraDistanceDegree<4000)
+		{
+			cameraDistanceDegree++;
+
+			//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+			//gamePhysics->UpdateMapMarkers(mapScale);
+			UpdateCameraDistance();
+		}
+
+	if(EventReceiver->IsKeyDown(irr::KEY_DOWN))
+		//if (cameraDistanceDegree>0)
+		{
+			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
+			cameraDistanceDegree--;
+			//UpdateCameraDistance();
+			//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+			//gamePhysics->UpdateMapMarkers(mapScale);
+			UpdateCameraDistance();
+
+		}
+
+	videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
+	sceneManager->drawAll();
+	videoDriver->endScene();
+}
+
+void MapSpaceView::UpdateCameraDistance()
+{
+	u32 i;
+	f64 mapScale;
+	mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+	for (i=0;i<MapObjectList.size();i++)
+	{
+		//MapObjectList[i]->UpdatePhysics(time);
+		MapObjectList[i]->UpdatePosition(mapScale);
+	}
+}
+
+
+
+void MapSpaceView::Close()
+{
+	sceneManager->drop();
+}
+
+
+void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView)
+{
+	u32 i;
+	sceneManager->clear();
+	for (i=0;i<SpaceObjectList.size();i++)
+	{
+		vector3d position = SpaceObjectList[i]->GetPosition();
+		//SpaceObjectList[i]->UpdateSceneNode();
+
+		SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+		if (sceneNode2)
+		{
+			sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+			sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
+			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
+			//sizeMarker  = .07;
+			sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
+			mapView->AddObject(SpaceObjectList[i],sceneNode2);
+		}
+	
+		SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,SpaceObjectList[i]->GetName().c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
+		sceneNode3->setPosition(vector3df(5.f,1.0f,0));
+
+	}
+	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
+	camera->setFOV(.7f);
+	camera->setTarget(vector3df(0,0,0));
+	camera->setPosition(vector3df(0,0,-100.f));
+	camera->setFarValue(200.f);
+
+}
+
+
+
+
+/*
+void SpaceObject::Accelerate(vector3d acceleration, f32 time)
+{
+	speed += acceleration*time;
+}
+
+void SpaceObject::LinearMotion(f32 time)
+{
+	position += speed*time;
+}*/
+
+
+
+
+
+// Processes parameters and initializes the game
+int DG_Game::Init(int Count, char **Arguments) {
+	// ask user for driver
+	
+	gamePhysics = new GamePhysics;
+	gamePhysics->globalTime = 0;
+
+
+
+
+	/*
+	video::E_DRIVER_TYPE driverType=driverChoiceConsole();
+	if (driverType==video::EDT_COUNT)
+		return 1;
+	*/
+	//driverType = video::EDT_OPENGL;
+
+	// create device
+
+	//IrrlichtDevice* device = createDevice(driverType,
+	device = createDevice(video::EDT_OPENGL,
+			core::dimension2d<u32>(1024, 768), 16, false, false, false, &receiver);
+
+	if (device == 0)
+		return 1; // could not create selected driver.
+
+	driver = device->getVideoDriver();
+	smgr = device->getSceneManager();
+	gameMode  = 0;
+
+	RealSpace = new RealSpaceView();
+	RealSpace->SetRoot(this);
+	RealSpace->SetDevice(device);
+	RealSpace->SetSceneManager(smgr);
+	RealSpace->SetVideoDriver(driver);
+	RealSpace->SetEventReceiver(&receiver);
+	RealSpace->SetPhysics(gamePhysics);
+
+	RealSpace->Init();
+	activeView = RealSpace;
+
+	SectorMap = new MapSpaceView();
+	SectorMap->SetRoot(this);
+	SectorMap->SetSceneManager(smgr->createNewSceneManager()); //drop in MapSpaceView::Close
+	SectorMap->SetDevice(device);
+	SectorMap->SetVideoDriver(driver);
+	SectorMap->SetEventReceiver(&receiver);
+	SectorMap->SetPhysics(gamePhysics);
+
+	SectorMap->Init();
+
+
+
+	lastFPS = -1;
+
+	// In order to do framerate independent movement, we have to know
+	// how long it was since the last frame
+	then = device->getTimer()->getTime();
+
+
+
+	Done = false;
+
+	return 1;
+}
+
+// Updates the current state and runs the game engine
+void DG_Game::Update() {
+
+	// Run irrlicht engine
+	if(!device->run())
+	{
+		Done = true;
+		return;
+	}
+
+	// Work out a frame delta time.
+	const u32 now = device->getTimer()->getTime();
+	f64 frameDeltaTime = (f64)(now - then) / 1000.0; // Time in seconds
+	then = now;
+
+	if (frameDeltaTime>0.02) frameDeltaTime = 0.02;
+
+	activeView->Update(frameDeltaTime);
+
+	/*
+	switch (gameMode)
+	{
+	case 0:
+		{
+			break;
+		}
+	case 1:
+		{
+			if (receiver.IsKeyDown(irr::KEY_ESCAPE))
+				gameMode = 0;
+			
+			if(receiver.IsKeyDown(irr::KEY_UP))
+				if (cameraMapDistanceDegree<4000)
+				{
+					cameraMapDistanceDegree++;
+
+					f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+					gamePhysics->UpdateMapMarkers(mapScale);
+				}
+
+			if(receiver.IsKeyDown(irr::KEY_DOWN))
+				if (cameraMapDistanceDegree>0)
+				{
+					//cameraDistance *= 1.f*(1.f-frameDeltaTime);
+					cameraMapDistanceDegree--;
+					//UpdateCameraDistance();
+					f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+					gamePhysics->UpdateMapMarkers(mapScale);
+
+				}
+
+			driver->beginScene(true, true, video::SColor(255,20,20,20));
+			sceneManagerMap->drawAll();
+			driver->endScene();
+			break;
+		}
+	default:
+		break;
+	}
+	*/
 
 	int fps = driver->getFPS();
 
@@ -1511,12 +1806,12 @@ void DG_Game::Update() {
 		tmp += driver->getName();
 		tmp += L"] fps: ";
 		tmp += fps;
-		tmp += L", ";
+/*		tmp += L", ";
 		tmp += playerShip->GetPosition().X;
 		tmp += L", ";
 		tmp += playerShip->GetPosition().Y;
 		tmp += L", ";
-		tmp += cameraDistance;
+		tmp += cameraDistance;*/
 
 		device->setWindowCaption(tmp.c_str());
 		lastFPS = fps;
@@ -1527,17 +1822,23 @@ void DG_Game::Close() {
 		/*
 	In the end, delete the Irrlicht device.
 	*/
-	device->drop();
+	
+	//Close views
+	RealSpace->Close();
+	SectorMap->Close();
 
+	device->drop();
 }
 
-void DG_Game::UpdateCameraDistance()
+void DG_Game::ActivateMap()
 {
-	//f32 camreDistance;
-	cameraDistance = 30.0*exp(cameraDistanceDegree*0.003);
-	camera->setFarValue((f32)(cameraDistance*2.0));
-	gamePhysics->UpdateMarkers(cameraDistance);
+	SectorMap->Init();
+	activeView = SectorMap;
+}
 
+void DG_Game::ActivateRealSpace()
+{
+	activeView = RealSpace;
 }
 
 
