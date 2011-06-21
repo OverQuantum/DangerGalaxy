@@ -36,6 +36,8 @@ coding demo1:
 110618: ADD: obrital params (semi-major axis and e)
 110619: ADD: map of starsystem
 110620: ADD: zoom on map, labels on map (yet looks terrible)
+110621: CHG: discretization effect elimitated
+110621: REM: thrust and speed indicators
 
 
 DONE:
@@ -48,9 +50,10 @@ DONE:
 + adjust autopilot to reduce thrust if speed is low
 + autopilot to orbiting gravity-dominant object
 + map of star system
++ elimitate discretization effect
 
 TODO
--0elimitate discretization effect - see at orbit of Pluto
+-0remove setPosition for camera each frame
 -1zoom map around arbitrary point, starting with ship
 -2remove SetDevice e.t.c. from *View classes - use GetDevice from DG_Game object, provided by SetRoot
 -3display more info about orbit - shape, min/max distance (with fall estimation), period
@@ -68,7 +71,7 @@ minor:
 
 
 QUESTIONS
-- how display map info above map - gui or adjust billboard?
+- how display map-info above map - gui or adjust billboard?
 - limit FPS to 200/100/?
 - how to draw ship passing stars and planets?  [thinking: collision]
 - time game koefficient (to pass star system in a matter of minutes/seconds) [current: 1000]
@@ -82,7 +85,7 @@ A/D - rotate
 W/S - thrust
 Space - breaking (autopilot) relative to distant stars
 1/2/3/4 - different thrust levels (1 - highest, 4 - lowest)
-O - orbiting (around object which product max graviry force at player's ship)
+O - orbiting (around object which produce max graviry force at player's ship)
 Up/Down - zoom
 Tab - switch to map
 
@@ -258,6 +261,7 @@ class SpaceObject {
 		//updating
 		void UpdatePhysics(f64 time);
 		void UpdateSceneNode();
+		void UpdateSceneNode(SpaceObject* centerSceneObject);
 		void UpdateMarkerNode(f64 cameraDistance);
 	private:
 		bool isEmitGravity;//for calulcation of gravity field. Gravity is emitted by massive objects - stars, planets, moons, black holes, asteroids. May be by specific weapons or traps
@@ -335,6 +339,21 @@ void SpaceObject::UpdateSceneNode()
 		sceneMarkerNode->setRotation(vector3df(0,0,(f32)rotation));
 	}
 }
+
+void SpaceObject::UpdateSceneNode(SpaceObject* centerSceneObject)
+{
+	f32 positionX = (f32)(position.X - centerSceneObject->position.X);
+	f32 positionY = (f32)(position.Y - centerSceneObject->position.Y);
+	sceneNode->setPosition(vector3df(positionX,positionY,0));
+	sceneNode->setRotation(vector3df(0,0,(f32)rotation));
+	if (sceneMarkerNode)
+	{
+		//TODO: optimize?
+		sceneMarkerNode->setPosition(vector3df(positionX,positionY,0.01f));
+		sceneMarkerNode->setRotation(vector3df(0,0,(f32)rotation));
+	}
+}
+
 
 /*
 void SpaceObject::Thrust(f32 power,f32 time)
@@ -494,6 +513,7 @@ class GamePhysics {
 	public:
 		f64 globalTime;
 		void Update(f64 time);
+		void UpdateNodes(SpaceObject* centerSceneObject);
 		void AddObject(SpaceObject* newObject);
 		void UpdateMarkers(f64 cameraDistance);
 		void UpdateMapMarkers(f64 mapScale);
@@ -511,9 +531,20 @@ void GamePhysics::Update(f64 time)
 	for (i=0;i<SpaceObjectList.size();i++)
 	{
 		SpaceObjectList[i]->UpdatePhysics(time);
-		SpaceObjectList[i]->UpdateSceneNode();
+		//SpaceObjectList[i]->UpdateSceneNode();
 	}
 }
+
+void GamePhysics::UpdateNodes(SpaceObject* centerSceneObject)
+{
+	u32 i;
+	for (i=0;i<SpaceObjectList.size();i++)
+	{
+		//SpaceObjectList[i]->UpdatePhysics(time);
+		SpaceObjectList[i]->UpdateSceneNode(centerSceneObject);
+	}
+}
+
 
 void GamePhysics::UpdateMarkers(f64 cameraDistance)
 {
@@ -1216,11 +1247,9 @@ private:
 	f64 playerThrust;
 
 	scene::ICameraSceneNode * camera;
-	scene::IParticleSystemSceneNode * playerThrustParticles;
-	scene::IParticleEmitter*  playerThrustEmitter;
-	//scene::IParticleSystemSceneNode * playerThrust;
-	//scene::IParticleEmitter*  motionIndicatorEmitter;
-	scene::IParticleSystemSceneNode* motionIndicator;
+	//scene::IParticleSystemSceneNode * playerThrustParticles;
+	//scene::IParticleEmitter*  playerThrustEmitter;
+	//scene::IParticleSystemSceneNode* motionIndicator;
 	gui::IGUIStaticText* simpleTextToDisplay;
 
 };
@@ -1264,6 +1293,7 @@ void RealSpaceView::Init()
 	
 	// create a particle system
 
+	/*
 	motionIndicator =
 		sceneManager->addParticleSystemSceneNode(false);
 
@@ -1291,9 +1321,10 @@ void RealSpaceView::Init()
 	motionIndicator->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
 	motionIndicator->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire.bmp"));
 	motionIndicator->setMaterialType(video::EMT_TRANSPARENT_VERTEX_ALPHA);
-	/**/
+	*/
 
 
+	/*
 	// create a particle system 2
 	playerThrustParticles =
 		sceneManager->addParticleSystemSceneNode(false,playerShip->GetNode());
@@ -1324,7 +1355,7 @@ void RealSpaceView::Init()
 	playerThrustParticles->setMaterialType(video::EMT_TRANSPARENT_VERTEX_ALPHA);
 	//playerThrust->setVisible(false);
 	//ps2->setRotation(vector3d(0,0,90));
-	/**/
+	*/
 
 	/*
 	SceneNode * node3 = smgr->addMeshSceneNode(smgr->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
@@ -1417,22 +1448,21 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	//someShip->SetControl(20.f,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
 
 	
+	/*
 	f64 thrust = playerShip->GetThrust();
 	if (thrust!=0)
 	{
-		vector3d emitterDirection=.001*playerShip->GetSpeed()-thrust*.000001*playerShip->GetDirection();
-		//playerThrust->setVisible(true);
-		//playerThrust->
+		//vector3d emitterDirection=.001*playerShip->GetSpeed()-thrust*.000001*playerShip->GetDirection();
+		vector3d emitterDirection=-thrust*.000001*playerShip->GetDirection();
+
 		playerThrustParticles->setEmitter(playerThrustEmitter);
-		//playerThrustEmitter->setDirection(-.02f*vector3d(sin(playerShip->rotation*CoeffDegreesToRadians),-cos(playerShip->rotation*CoeffDegreesToRadians),0));
-		//playerThrustEmitter->setDirection(.001f*playerShip->speed);
 		playerThrustEmitter->setDirection(vector3df((f32)emitterDirection.X,(f32)emitterDirection.Y,0));
 	}
 	else
 	{
 		//playerThrust->setVisible(false);
 		playerThrustParticles->setEmitter(0);
-	}/**/
+	}*/
 
 	if(EventReceiver->IsKeyDown(irr::KEY_UP))
 		if (cameraDistanceDegree<4000)
@@ -1474,6 +1504,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	//playerShip->UpdatePhysics(frameDeltaTime);
 	//playerShip->UpdateSceneNode();
 	gamePhysics->Update(frameDeltaTime);
+	gamePhysics->UpdateNodes(playerShip);
 
 	//node->setPosition(playerShip->position);
 	//node->setPosition(playerShip->position);
@@ -1483,9 +1514,10 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	//nodePosition.Z = 30;
 	//node->setPosition(nodePosition);
 
-	nodePosition = vector3df((f32)playerPosition.X,(f32)playerPosition.Y,0);
+	//nodePosition = vector3df((f32)playerPosition.X,(f32)playerPosition.Y,0);
+	nodePosition = vector3df(0);
 
-	motionIndicator->setPosition(nodePosition);
+	//motionIndicator->setPosition(nodePosition);
 
 	camera->setTarget(nodePosition);
 	nodePosition.Z = -(f32)GetCameraDistance();
