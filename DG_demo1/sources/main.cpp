@@ -1,9 +1,39 @@
-/** 
-DangerGalaxy Demo #1
-made from Irrlicht sample "04.Movement"
-*/
-
 /*
+DangerGalaxy, Demo #1, development play
+2.5D galaxy-wide space exploration game with crowdsource (micro)modding
+
+Copyright © 2011 OverQuantum
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+Author contacts:
+http://overquantum.livejournal.com
+https://github.com/OverQuantum
+
+Project homepage:
+https://github.com/OverQuantum/DangerGalaxy
+
+
+DangerGalaxy uses Irrlicht Engine v1.7.2, released under zlib/libpng license.
+Please refer to http://irrlicht.sourceforge.net for details
+
+
+//#########################################################################
+
+
+Change log
+
 prehistory:
 110510: SGU ended
 110512: SAIS played
@@ -40,6 +70,10 @@ coding demo1:
 110621: REM: thrust and speed indicators
 110622: CHG: removed SetDevice e.t.c. from *View classes
 110622: CHG: removed setPosition for camera each frame
+110623: CHG: declarations and methods rearranged - now: class list; class declarations; methods, sorted by classes; main
+110623: ADD: license info added
+110623: ADD: simple FTL jump
+110623: ADD: DisplayMessage method via console
 
 
 DONE:
@@ -55,12 +89,18 @@ DONE:
 + elimitate discretization effect
 + removed SetDevice e.t.c. from *View classes - use GetDevice from DG_Game object, provided by SetRoot
 + removed setPosition for camera each frame
++ simple FTL jump
 
 TODO
--1new thrust - flame, by resizable mesh
--2zoom map around arbitrary point, starting with ship
--3display more info about orbit - shape, min/max distance (with fall estimation), period
+-2split GameView::Init into ::Init(...) and ::Activate(...)
+-3new thrust - flame, by resizable mesh
+
+- message list
+- zoom map around arbitrary point, starting with ship
+- display more info about orbit - shape, min/max distance (with fall estimation), period
+
 -?orbiting of gravity-domination body by orbital parameters, not simple euler
+
 - camera further from system, than 4M? (degree=4000) - requires remastering scene
 - planet rotation around it's axis
 - backcull of stars - to display then ship inside
@@ -76,7 +116,7 @@ minor:
 
 QUESTIONS
 - how display map-info above map - gui or adjust billboard?
-- limit FPS to 200/100/?
+- limit FPS and calc physics to 200/100/?
 - how to draw ship passing stars and planets?  [thinking: collision]
 - time game koefficient (to pass star system in a matter of minutes/seconds) [current: 1000]
 - size game koefficient (planet size in a relation to its orbits) [current: NO]
@@ -92,13 +132,19 @@ Space - breaking (autopilot) relative to distant stars
 O - orbiting (around object which produce max graviry force at player's ship)
 Up/Down - zoom
 Tab - switch to map
+F - jump to FTL (FTL works only if gravity < -5.75 dgr)
 
 CONTROL on map:
 Up/Down - zoom
 Esc - back to RealSpace
 
+CONTROL on FTL:
+Esc - drop out to RealSpace
+
 */
 
+//#########################################################################
+//pragmas
 
 #ifdef _MSC_VER
 // We'll also define this to stop MSVC complaining about sprintf().
@@ -106,19 +152,25 @@ Esc - back to RealSpace
 #pragma comment(lib, "Irrlicht.lib")
 #endif
 
+
+//includes
+
 #include <irrlicht.h>
-//#include "driverChoice.h"
 #include <SMaterial.h>
 
 using namespace irr;
+
+
+//defines
 
 #define RESOURCE_PATH	"media"
 #define CoeffDegreesToRadians  0.01745329
 #define TWO_PI 6.2831853
 #define G_CONSTANT 66.7384
+#define LIGHTSPEED 300000.0
 
-//typedef core::vector3df vector3d;
 
+//types
 
 typedef core::stringw   text_string;
 
@@ -128,7 +180,8 @@ typedef core::vector3d<f32>  vector3df;
 typedef core::vector3d<f64>  vector3d;
 typedef scene::ISceneNode    SceneNode;
 
-//#define vector3d core::vector3df
+//#########################################################################
+//global functions
 
 text_string print_f64(f64 value, wchar_t* format)
 {
@@ -137,14 +190,20 @@ text_string print_f64(f64 value, wchar_t* format)
 	return tmp;
 }
 
+//#########################################################################
+//classes
 
-
-class GamePhysics;
+class MyEventReceiver;
+class GravityInfo;
 class SpaceObject;
+class GamePhysics;
+class StarSystemConstructor;
 class DG_Game;
-class RealSpaceView;
-class MapSpaceView;
 class GameView;
+class RealSpaceView;
+class MapObject;
+class MapSpaceView;
+class FTLView;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -172,6 +231,18 @@ public:
 	{
 		return KeyIsDown[keyCode];
 	}
+
+	virtual bool IsKeyPressed(EKEY_CODE keyCode) 
+	{
+		if (KeyIsDown[keyCode])
+		{
+			KeyIsDown[keyCode] = false;
+			return true;
+		}
+		return false;
+	}
+
+	//void CleanKeyStatus(EKEY_CODE keyCode) {KeyIsDown[keyCode]=false;}
 	
 	MyEventReceiver()
 	{
@@ -202,7 +273,6 @@ class GravityInfo {
 		f64 orbitArgumentPeriapsis;//Argument of periapsis
 };
 
-
 //SpaceObject - is any object in current visible space
 class SpaceObject {
 
@@ -213,6 +283,7 @@ class SpaceObject {
 			MOTION_NONE,
 			MOTION_ORBITAL,
 			MOTION_NAVIGATION,
+			MOTION_FTL,
 		};
 
 		enum ControlType {
@@ -231,7 +302,9 @@ class SpaceObject {
 		vector3d GetPosition() {return position;}
 		vector3d GetSpeed();
 		vector3d GetDirection();
+		f64 GetRotation() {return rotation;}
 		text_string GetName() {return name;}
+		MotionType GetMotionType() {return motionType;}
 		//f32 GetMaxThrust() {return maxThrust;}
 		//f32 GetMaxRotationThrust() {return maxRotationThrust;}
 
@@ -262,6 +335,9 @@ class SpaceObject {
 		void AutopilotOrbiting();
 		void AutopilotSetSpeed(vector3d requiredSpeed);
 
+		void JumpToFTL(f64 ftlSpeed);
+		void BreakFTL(f64 remainingSpeed);
+
 		//updating
 		void UpdatePhysics(f64 time);
 		void UpdateSceneNode();
@@ -289,6 +365,7 @@ class SpaceObject {
 		f64 rotationSpeed;
 		f64 thrustPower;
 		f64 sizeMarker;
+		f64 ftlSpeed;//in multiple of lightspeed
 
 		vector3d position;//current position in space, coordinates (zero at star system center of mass)
 		vector3d speed;//current motion speed, relative to "background stars"
@@ -299,6 +376,268 @@ class SpaceObject {
 		SceneNode * sceneMarkerNode; //Irrlich renderable object - for displaying from a far
 		//vector3d acceleration; //
 };
+
+class GamePhysics {
+	public:
+		f64 globalTime;
+		void Update(f64 time);
+		void UpdateNodes(SpaceObject* centerSceneObject);
+		void AddObject(SpaceObject* newObject);
+		void UpdateMarkers(f64 cameraDistance);
+		void UpdateMapMarkers(f64 mapScale);
+		vector3d GetGravityAcceleration(vector3d location);
+		GravityInfo* GetGravityInfo(vector3d location);
+		bool IsFTLPossible(vector3d location);
+		void MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView);
+	private:
+		core::array<SpaceObject*> SpaceObjectList;
+};
+
+class StarSystemConstructor
+{
+	public:
+		void SetupConstructor(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver);
+		void MakeSimpleSystem();
+		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
+		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
+		SpaceObject* MakeShip();
+		void AddMarker(SpaceObject* toObject, u32 type);
+
+	private:
+		GamePhysics* physics;
+		scene::ISceneManager* sceneManager;
+		video::IVideoDriver* videoDriver;
+};
+
+class DG_Game {
+
+	public:
+
+		int Init(int Count, char **Arguments);
+		void Update();
+		void Close();
+
+		void ActivateMap();
+		void ActivateRealSpace();
+		void ActivateFTL();
+
+		IrrlichtDevice* GetDevice() {return device;}
+		video::IVideoDriver* GetVideoDriver() {return driver;}
+		MyEventReceiver* GetEventReceiver() {return receiver;}
+		SpaceObject* GetPlayerShip() {return playerShip;}
+	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
+	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
+
+		
+		//void ChangeState(StateClass *State);
+		//StateClass *GetState() { return State; }
+
+		bool IsDone() { return Done; }
+		void SetDone(bool Value) { Done = Value; }
+		//float GetTimeStep() { return TimeStep; }
+		//void ResetTimer();
+
+		//MAP
+		s32 cameraMapDistanceDegree;
+
+	private:
+		//f64 MOVEMENT_SPEED;
+		// Flags
+
+		SpaceObject* playerShip;
+
+		IrrlichtDevice* device;
+		u32 then;
+		GamePhysics * gamePhysics;
+		bool Done, MouseWasLocked;
+		SceneNode * node;
+		MyEventReceiver* receiver;
+		scene::ISceneManager* smgr;
+		video::IVideoDriver* driver;
+		int lastFPS;
+
+		int gameMode;//0 - flying, 1 - map
+
+
+		RealSpaceView* RealSpace;
+		MapSpaceView* SectorMap;
+		FTLView* FTLSpace;
+
+		GameView* activeView;
+};
+
+class GameView
+{
+public:
+	virtual void Init() {};
+	virtual void Update(f64 frameDeltaTime) {};
+	virtual void Close() {};
+
+	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
+	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
+	//void SetDevice(IrrlichtDevice* newDevice) {device = newDevice;}
+	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
+	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
+	void SetPhysics(GamePhysics* newPhysics) {gamePhysics = newPhysics;}
+
+	void DisplayMessage(text_string message);
+
+protected:
+	DG_Game* gameRoot;
+	GamePhysics * gamePhysics;
+	MyEventReceiver* eventReceiver;
+	IrrlichtDevice* device;
+	scene::ISceneManager* sceneManager;
+	video::IVideoDriver* videoDriver;
+};
+
+class RealSpaceView : public GameView
+{
+public:
+	void Init();
+	void Update(f64 frameDeltaTime);
+	void Close();
+
+	f64 GetCameraDistance() {return cameraDistance;}
+	s32 cameraDistanceDegree;
+
+	void UpdateCameraDistance();
+
+private:
+	f64 cameraDistance;
+
+	SpaceObject* playerShip;
+	f64 playerThrust;
+
+	scene::ICameraSceneNode * camera;
+	//scene::IParticleSystemSceneNode * playerThrustParticles;
+	//scene::IParticleEmitter*  playerThrustEmitter;
+	//scene::IParticleSystemSceneNode* motionIndicator;
+	gui::IGUIStaticText* simpleTextToDisplay;
+};
+
+class MapObject
+{
+public:
+	void UpdatePosition(f64 mapScale);
+	void SetNode(SceneNode * node) {sceneNode = node;}
+	void SetOriginal(SpaceObject* object) {originalObject = object;}
+
+private:
+	SpaceObject* originalObject;
+	SceneNode* sceneNode; //Irrlich renderable object
+};
+
+class MapSpaceView : public GameView
+{
+public:
+	void Init();
+	void Update(f64 frameDeltaTime);
+	void Close();
+	void AddObject(SpaceObject* spaceObject, SceneNode* node);
+
+	s32 cameraDistanceDegree;
+
+	void UpdateCameraDistance();
+
+private:
+	core::array<MapObject*> MapObjectList;
+};
+
+class FTLView : public GameView
+{
+public:
+	void Init();
+	void Update(f64 frameDeltaTime);
+	void Close();
+
+private:
+	SpaceObject* playerShip;
+};
+
+//#########################################################################
+//Class methods
+
+//#########################################################################
+//GravityInfo
+
+void GravityInfo::UpdateGravityInfoOrbit(SpaceObject* orbitingObject)
+{
+	f64 invAxis;//q = 1/a, where a - Semimajor axis
+	f64 specificRAMomentum;//Specific relative angular momentum 
+
+	if (!maxGravityObject)
+		return;
+
+	//Semimajor axis, a, is calc by vis-viva equation: 1/a = 2/r - v*v/G(M+m) = q
+	vector3d relativePosition, relativeSpeed;
+
+	relativePosition = orbitingObject->GetPosition() - maxGravityObject->GetPosition();
+	relativeSpeed = orbitingObject->GetSpeed() - maxGravityObject->GetSpeed();
+
+	invAxis = 2.0/relativePosition.getLength() - relativeSpeed.getLengthSQ()/(G_CONSTANT*maxGravityObject->GetMass());
+
+	//Eccentricity, e, is calc using specific relative angular momentum: e = sqrt(1+h*h*q*q/2), where h=|H|, q = 1/a
+	specificRAMomentum = relativeSpeed.X * relativePosition.Y - relativeSpeed.Y * relativePosition.X;
+
+	if (invAxis != 0.0)
+	{
+		orbitSemimajorAxis = 1.0/invAxis;
+	}
+	else
+	{
+		orbitSemimajorAxis = 0.0;
+	}
+	//orbitEccentricity = sqrt(1+specificRAMomentum*specificRAMomentum*invAxis*invAxis*.5);//not work
+
+	//TODO: optimize G_CONSTANT*maxGravityObject->GetMass() combined with previous use
+	orbitEccentricity = sqrt(1-specificRAMomentum*specificRAMomentum*invAxis/(G_CONSTANT*maxGravityObject->GetMass()));
+	//orbitEccentricity = -2;//not calced
+}
+
+
+text_string GravityInfo::print()
+{
+	text_string gravityInfo(L"");
+	if (maxGravityObject)
+	{
+		gravityInfo = L"Max gravity from: ";
+		gravityInfo += maxGravityObject->GetName();
+		if (secondMaxGravityObject)
+		{
+			f64 percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
+			gravityInfo += L" (";
+			gravityInfo += print_f64(log(maxGravity),L"%.02f");
+			gravityInfo += L" dgr ";//dgr: logarithm of gravity acceleration, 0 dgr = 1 m/s*s
+			gravityInfo += print_f64(percent,L"%.02f");
+			gravityInfo += L"%)\r\n";
+			gravityInfo += L"Orbit: ";
+			gravityInfo += print_f64(orbitSemimajorAxis,L"%.02f");
+			gravityInfo += L", e: ";
+			gravityInfo += print_f64(orbitEccentricity,L"%f");
+			gravityInfo += L"\r\nNext gravity from: ";
+			gravityInfo += secondMaxGravityObject->GetName();
+			gravityInfo += L" (";
+			gravityInfo += print_f64(log(secondMaxGravity),L"%.02f");
+			gravityInfo += L" dgr ";
+			//gravityInfo += (100.0-percent);
+			gravityInfo += print_f64(100.0-percent,L"%.02f");
+			gravityInfo += L"%)";
+
+			//gravityInfo += L"% / ";
+			//gravityInfo += print_f64(log(secondMaxGravity)-log(maxGravity),L"%.02f");
+			//gravityInfo += L" dgr)";
+		}
+	}
+	else
+	{
+		gravityInfo = L"no gravity detected";
+	}
+	return gravityInfo;
+}
+
+//#########################################################################
+//SpaceObject
 
 SpaceObject::SpaceObject()
 {
@@ -311,6 +650,7 @@ SpaceObject::SpaceObject()
 	sizeMarker = 0.01;
 	name = L"";
 
+	ftlSpeed = 10.0;
 	isEmitGravity = false;
 	isAffectedByGravity = false;
 	motionType = MOTION_NONE;
@@ -513,62 +853,6 @@ void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 	}
 }
 
-class GamePhysics {
-	public:
-		f64 globalTime;
-		void Update(f64 time);
-		void UpdateNodes(SpaceObject* centerSceneObject);
-		void AddObject(SpaceObject* newObject);
-		void UpdateMarkers(f64 cameraDistance);
-		void UpdateMapMarkers(f64 mapScale);
-		vector3d GetGravityAcceleration(vector3d location);
-		GravityInfo* GetGravityInfo(vector3d location);
-		void MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView);
-	private:
-		core::array<SpaceObject*> SpaceObjectList;
-};
-
-void GamePhysics::Update(f64 time)
-{
-	u32 i;
-	globalTime += time;
-	for (i=0;i<SpaceObjectList.size();i++)
-	{
-		SpaceObjectList[i]->UpdatePhysics(time);
-		//SpaceObjectList[i]->UpdateSceneNode();
-	}
-}
-
-void GamePhysics::UpdateNodes(SpaceObject* centerSceneObject)
-{
-	u32 i;
-	for (i=0;i<SpaceObjectList.size();i++)
-	{
-		//SpaceObjectList[i]->UpdatePhysics(time);
-		SpaceObjectList[i]->UpdateSceneNode(centerSceneObject);
-	}
-}
-
-
-void GamePhysics::UpdateMarkers(f64 cameraDistance)
-{
-	u32 i;
-	for (i=0;i<SpaceObjectList.size();i++)
-	{
-		SpaceObjectList[i]->UpdateMarkerNode(cameraDistance);
-	}
-}
-
-void GamePhysics::UpdateMapMarkers(f64 mapScale)
-{
-}
-
-void GamePhysics::AddObject(SpaceObject* newObject)
-{
-	SpaceObjectList.push_back(newObject);
-	newObject->SetPhysics(this);
-}
-
 void SpaceObject::UpdatePhysics(f64 time)
 {
 	vector3d acceleration = vector3d(0,0,0);
@@ -591,6 +875,8 @@ void SpaceObject::UpdatePhysics(f64 time)
 		}
 		rotation += rotationSpeed*time;
 		speed += acceleration*time;
+
+		//TODO: use LIGHTSPEED instead of fixed constants
 		if (speed.getLength()>240000.0)
 		{
 			//above 0.8c - activate "relativistic" effects
@@ -625,47 +911,19 @@ void SpaceObject::UpdatePhysics(f64 time)
 				position+=orbitingObject->position;
 		}
 		break;
+	case MOTION_FTL:
+		{
+			position += speed*time;
+
+			//TODO: more advanced check, calc minimum distance to all grav-emit objects and check FTL limit against that
+			if (!(physics->IsFTLPossible(position)))
+				motionType = MOTION_NAVIGATION;
+		}
 	default:
 		break;
 	}
 }
 
-void GravityInfo::UpdateGravityInfoOrbit(SpaceObject* orbitingObject)
-{
-	f64 invAxis;//q = 1/a, where a - Semimajor axis
-	f64 specificRAMomentum;//Specific relative angular momentum 
-
-	if (!maxGravityObject)
-		return;
-
-	//Semimajor axis, a, is calc by vis-viva equation: 1/a = 2/r - v*v/G(M+m) = q
-	vector3d relativePosition, relativeSpeed;
-
-	relativePosition = orbitingObject->GetPosition() - maxGravityObject->GetPosition();
-	relativeSpeed = orbitingObject->GetSpeed() - maxGravityObject->GetSpeed();
-
-	invAxis = 2.0/relativePosition.getLength() - relativeSpeed.getLengthSQ()/(G_CONSTANT*maxGravityObject->GetMass());
-
-	//Eccentricity, e, is calc using specific relative angular momentum: e = sqrt(1+h*h*q*q/2), where h=|H|, q = 1/a
-	specificRAMomentum = relativeSpeed.X * relativePosition.Y - relativeSpeed.Y * relativePosition.X;
-
-	if (invAxis != 0.0)
-	{
-		orbitSemimajorAxis = 1.0/invAxis;
-	}
-	else
-	{
-		orbitSemimajorAxis = 0.0;
-	}
-	//orbitEccentricity = sqrt(1+specificRAMomentum*specificRAMomentum*invAxis*invAxis*.5);//not work
-
-	//TODO: optimize G_CONSTANT*maxGravityObject->GetMass() combined with previous use
-	orbitEccentricity = sqrt(1-specificRAMomentum*specificRAMomentum*invAxis/(G_CONSTANT*maxGravityObject->GetMass()));
-
-
-	//orbitEccentricity = -2;//not calced
-
-}
 
 vector3d SpaceObject::GetSpeed()
 {
@@ -716,6 +974,109 @@ vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance);
 }
 
+//Breaking relative to distant-stars
+void SpaceObject::AutopilotOrbiting()
+{
+	
+	f64 requiredRelativeSpeed;
+	vector3d maxGravityAcceleration;
+	vector3d relativePosition;
+	vector3d relativeSpeed;
+	vector3d requiredSpeed;
+
+	//Get gravity info from game physics
+	GravityInfo* gravInfo = physics->GetGravityInfo(position);
+	if (!gravInfo->maxGravityObject) //no dominant object - no orbiting
+		return;
+	
+	relativePosition = position - gravInfo->maxGravityObject->GetPosition();
+	relativeSpeed = speed - gravInfo->maxGravityObject->GetSpeed();
+
+	//get gravity acceleration from dominant gravity object
+	maxGravityAcceleration = gravInfo->maxGravityObject->GetGravityAcceleration(position);
+
+	//required speed value - via centro-escape acceleration
+	requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); 
+
+	//required speed - perpendicular to relative position
+	requiredSpeed.X = relativePosition.Y;
+	requiredSpeed.Y = -relativePosition.X;
+	requiredSpeed.Z = 0;
+
+	//check opposite direction, it could be closer to current speed
+	if (relativeSpeed.dotProduct(requiredSpeed)<0)
+	{//yes, this direction is opposite to current speed vector
+		requiredSpeed.X=-requiredSpeed.X;//reverse required speed
+		requiredSpeed.Y=-requiredSpeed.Y;
+	}
+
+	requiredSpeed.normalize();//normalize - to get vector of 1 unit length
+	requiredSpeed*=requiredRelativeSpeed;//use required speed value
+	requiredSpeed+=gravInfo->maxGravityObject->GetSpeed();//absolute value
+
+	//debug: simple set speed to required value
+	//speed = requiredSpeed;
+	AutopilotSetSpeed(requiredSpeed);
+}
+
+void SpaceObject::JumpToFTL(f64 ftlSpeed)
+{
+	motionType = MOTION_FTL;
+	//speed.normalize();
+	speed = GetDirection();
+	speed*=ftlSpeed*LIGHTSPEED;
+}
+
+void SpaceObject::BreakFTL(f64 remainingSpeed)
+{
+	motionType = MOTION_NAVIGATION;
+	speed.normalize();
+	speed*=remainingSpeed;
+}
+
+//#########################################################################
+//GamePhysics
+
+void GamePhysics::Update(f64 time)
+{
+	u32 i;
+	globalTime += time;
+	for (i=0;i<SpaceObjectList.size();i++)
+	{
+		SpaceObjectList[i]->UpdatePhysics(time);
+		//SpaceObjectList[i]->UpdateSceneNode();
+	}
+}
+
+void GamePhysics::UpdateNodes(SpaceObject* centerSceneObject)
+{
+	u32 i;
+	for (i=0;i<SpaceObjectList.size();i++)
+	{
+		//SpaceObjectList[i]->UpdatePhysics(time);
+		SpaceObjectList[i]->UpdateSceneNode(centerSceneObject);
+	}
+}
+
+
+void GamePhysics::UpdateMarkers(f64 cameraDistance)
+{
+	u32 i;
+	for (i=0;i<SpaceObjectList.size();i++)
+	{
+		SpaceObjectList[i]->UpdateMarkerNode(cameraDistance);
+	}
+}
+
+void GamePhysics::UpdateMapMarkers(f64 mapScale)
+{
+}
+
+void GamePhysics::AddObject(SpaceObject* newObject)
+{
+	SpaceObjectList.push_back(newObject);
+	newObject->SetPhysics(this);
+}
 
 vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 {
@@ -777,61 +1138,47 @@ GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 	return gravInfo;
 }
 
-text_string GravityInfo::print()
+void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView)
 {
-	text_string gravityInfo(L"");
-	if (maxGravityObject)
+	u32 i;
+	sceneManager->clear();
+	for (i=0;i<SpaceObjectList.size();i++)
 	{
-		gravityInfo = L"Max gravity from: ";
-		gravityInfo += maxGravityObject->GetName();
-		if (secondMaxGravityObject)
-		{
-			f64 percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
-			gravityInfo += L" (";
-			gravityInfo += print_f64(log(maxGravity),L"%.02f");
-			gravityInfo += L" dgr ";//dgr: logarithm of gravity acceleration, 0 dgr = 1 m/s*s
-			gravityInfo += print_f64(percent,L"%.02f");
-			gravityInfo += L"%)\r\n";
-			gravityInfo += L"Orbit: ";
-			gravityInfo += print_f64(orbitSemimajorAxis,L"%.02f");
-			gravityInfo += L", e: ";
-			gravityInfo += print_f64(orbitEccentricity,L"%f");
-			gravityInfo += L"\r\nNext gravity from: ";
-			gravityInfo += secondMaxGravityObject->GetName();
-			gravityInfo += L" (";
-			gravityInfo += print_f64(log(secondMaxGravity),L"%.02f");
-			gravityInfo += L" dgr ";
-			//gravityInfo += (100.0-percent);
-			gravityInfo += print_f64(100.0-percent,L"%.02f");
-			gravityInfo += L"%)";
+		vector3d position = SpaceObjectList[i]->GetPosition();
+		//SpaceObjectList[i]->UpdateSceneNode();
 
-			//gravityInfo += L"% / ";
-			//gravityInfo += print_f64(log(secondMaxGravity)-log(maxGravity),L"%.02f");
-			//gravityInfo += L" dgr)";
+		SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+		if (sceneNode2)
+		{
+			sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+			sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
+			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
+			//sizeMarker  = .07;
+			sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
+			mapView->AddObject(SpaceObjectList[i],sceneNode2);
 		}
+		SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,SpaceObjectList[i]->GetName().c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
+		sceneNode3->setPosition(vector3df(5.f,1.0f,0));
+
 	}
-	else
-	{
-		gravityInfo = L"no gravity detected";
-	}
-	return gravityInfo;
+	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
+	camera->setFOV(.7f);
+	camera->setTarget(vector3df(0,0,0));
+	camera->setPosition(vector3df(0,0,-100.f));
+	camera->setFarValue(200.f);
+
 }
 
-class StarSystemConstructor
+bool GamePhysics::IsFTLPossible(vector3d location)
 {
-	public:
-		void SetupConstructor(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver);
-		void MakeSimpleSystem();
-		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
-		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
-		SpaceObject* MakeShip();
-		void AddMarker(SpaceObject* toObject, u32 type);
+	f64 grav = GetGravityAcceleration(location).getLengthSQ();
+	if (grav>1e-5)
+		return false;
+	return true;
+}
 
-	private:
-		GamePhysics* physics;
-		scene::ISceneManager* sceneManager;
-		video::IVideoDriver* videoDriver;
-};
+//#########################################################################
+//StarSystemConstructor
 
 void StarSystemConstructor::SetupConstructor(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver)
 {
@@ -1119,155 +1466,17 @@ void StarSystemConstructor::AddMarker(SpaceObject* toObject, u32 type)
 	toObject->SetMarkerNode(sceneNode2,sizeMarker);
 }
 
-//Breaking relative to distant-stars
-void SpaceObject::AutopilotOrbiting()
+//#########################################################################
+//GameView
+
+void GameView::DisplayMessage(text_string message)
 {
-	
-	f64 requiredRelativeSpeed;
-	vector3d maxGravityAcceleration;
-	vector3d relativePosition;
-	vector3d relativeSpeed;
-	vector3d requiredSpeed;
-
-	//Get gravity info from game physics
-	GravityInfo* gravInfo = physics->GetGravityInfo(position);
-	if (!gravInfo->maxGravityObject) //no dominant object - no orbiting
-		return;
-	
-	relativePosition = position - gravInfo->maxGravityObject->GetPosition();
-	relativeSpeed = speed - gravInfo->maxGravityObject->GetSpeed();
-
-	//get gravity acceleration from dominant gravity object
-	maxGravityAcceleration = gravInfo->maxGravityObject->GetGravityAcceleration(position);
-
-	//required speed value - via centro-escape acceleration
-	requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); 
-
-	//required speed - perpendicular to relative position
-	requiredSpeed.X = relativePosition.Y;
-	requiredSpeed.Y = -relativePosition.X;
-	requiredSpeed.Z = 0;
-
-	//check opposite direction, it could be closer to current speed
-	if (relativeSpeed.dotProduct(requiredSpeed)<0)
-	{//yes, this direction is opposite to current speed vector
-		requiredSpeed.X=-requiredSpeed.X;//reverse required speed
-		requiredSpeed.Y=-requiredSpeed.Y;
-	}
-
-	requiredSpeed.normalize();//normalize - to get vector of 1 unit length
-	requiredSpeed*=requiredRelativeSpeed;//use required speed value
-	requiredSpeed+=gravInfo->maxGravityObject->GetSpeed();//absolute value
-
-	//debug: simple set speed to required value
-	//speed = requiredSpeed;
-	AutopilotSetSpeed(requiredSpeed);
+	wprintf(L"DG: %s",message);
 }
 
-class DG_Game {
 
-	public:
-
-		int Init(int Count, char **Arguments);
-		void Update();
-		void Close();
-
-		void ActivateMap();
-		void ActivateRealSpace();
-
-		IrrlichtDevice* GetDevice() {return device;}
-		video::IVideoDriver* GetVideoDriver() {return driver;}
-		MyEventReceiver* GetEventReceiver() {return receiver;}
-		SpaceObject* GetPlayerShip() {return playerShip;}
-	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
-	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
-
-		
-		//void ChangeState(StateClass *State);
-		//StateClass *GetState() { return State; }
-
-		bool IsDone() { return Done; }
-		void SetDone(bool Value) { Done = Value; }
-		//float GetTimeStep() { return TimeStep; }
-		//void ResetTimer();
-
-		//MAP
-		s32 cameraMapDistanceDegree;
-
-	private:
-		//f64 MOVEMENT_SPEED;
-		// Flags
-
-		SpaceObject* playerShip;
-
-		IrrlichtDevice* device;
-		u32 then;
-		GamePhysics * gamePhysics;
-		bool Done, MouseWasLocked;
-		SceneNode * node;
-		MyEventReceiver* receiver;
-		scene::ISceneManager* smgr;
-		video::IVideoDriver* driver;
-		int lastFPS;
-
-		int gameMode;//0 - flying, 1 - map
-
-
-		RealSpaceView* RealSpace;
-		MapSpaceView* SectorMap;
-
-		GameView* activeView;
-};
-
-
-class GameView
-{
-public:
-	virtual void Init() {};
-	virtual void Update(f64 time) {};
-	virtual void Close() {};
-
-	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
-	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
-	//void SetDevice(IrrlichtDevice* newDevice) {device = newDevice;}
-	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
-	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
-	void SetPhysics(GamePhysics* newPhysics) {gamePhysics = newPhysics;}
-
-protected:
-	DG_Game* gameRoot;
-	GamePhysics * gamePhysics;
-	MyEventReceiver* eventReceiver;
-	IrrlichtDevice* device;
-	scene::ISceneManager* sceneManager;
-	video::IVideoDriver* videoDriver;
-};
-
-class RealSpaceView : public GameView
-{
-public:
-	void Init();
-	void Update(f64 time);
-	void Close();
-
-	f64 GetCameraDistance() {return cameraDistance;}
-	s32 cameraDistanceDegree;
-
-	void UpdateCameraDistance();
-
-private:
-	f64 cameraDistance;
-
-	SpaceObject * playerShip;
-	f64 playerThrust;
-
-	scene::ICameraSceneNode * camera;
-	//scene::IParticleSystemSceneNode * playerThrustParticles;
-	//scene::IParticleEmitter*  playerThrustEmitter;
-	//scene::IParticleSystemSceneNode* motionIndicator;
-	gui::IGUIStaticText* simpleTextToDisplay;
-
-};
+//#########################################################################
+//RealSpaceView
 
 void RealSpaceView::Init()
 {
@@ -1427,13 +1636,13 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	else
 		playerShip->SetControl(0,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
 
-	if(eventReceiver->IsKeyDown(irr::KEY_KEY_1))
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_1))
 		playerThrust = 1.0;
-	if(eventReceiver->IsKeyDown(irr::KEY_KEY_2))
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_2))
 		playerThrust = 0.1;
-	if(eventReceiver->IsKeyDown(irr::KEY_KEY_3))
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_3))
 		playerThrust = 0.01;
-	if(eventReceiver->IsKeyDown(irr::KEY_KEY_4))
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_4))
 		playerThrust = 0.001;
 
 	if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
@@ -1441,13 +1650,22 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	if (eventReceiver->IsKeyDown(irr::KEY_KEY_O))
 		playerShip->AutopilotOrbiting();
 
-	if (eventReceiver->IsKeyDown(irr::KEY_TAB))
-	{
+	if (eventReceiver->IsKeyPressed(irr::KEY_TAB))
 		gameRoot->ActivateMap();
-		//gamePhysics->MakeMap(sceneManagerMap,videoDriver);
-		//gameMode = 1;
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
+	{
+		if (gamePhysics->IsFTLPossible(playerShip->GetPosition()))
+		{
+			playerShip->JumpToFTL(10.0);
+			gameRoot->ActivateFTL();
+		}
+		else
+		{
+			DisplayMessage(L"Gravity is too high to jump to FTL\r\n");
+		}
 	}
-		
+
 
 	//playerShip->thrustPower = thrust*MOVEMENT_SPEED*5.f;
 	//playerShip->rotationSpeed = rotate;
@@ -1498,7 +1716,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	playerSpeed = playerShip->GetSpeed().getLength();
 	debug_text += playerSpeed;
 	debug_text += " km/s\r\n";
-	debug_text += (playerSpeed/300000.0);
+	debug_text += (playerSpeed/LIGHTSPEED);
 	debug_text += " c; ";
 	debug_text += "\r\n";
 	debug_text += gravInfo->print();
@@ -1529,17 +1747,8 @@ void RealSpaceView::UpdateCameraDistance()
 
 }
 
-class MapObject
-{
-public:
-	void UpdatePosition(f64 mapScale);
-	void SetNode(SceneNode * node) {sceneNode = node;}
-	void SetOriginal(SpaceObject* object) {originalObject = object;}
-
-private:
-	SpaceObject* originalObject;
-	SceneNode* sceneNode; //Irrlich renderable object
-};
+//#########################################################################
+//MapObject
 
 void MapObject::UpdatePosition(f64 mapScale)
 {
@@ -1550,22 +1759,8 @@ void MapObject::UpdatePosition(f64 mapScale)
 	}
 }
 
-
-class MapSpaceView : public GameView
-{
-public:
-	void Init();
-	void Update(f64 time);
-	void Close();
-	void AddObject(SpaceObject* spaceObject, SceneNode* node);
-
-	s32 cameraDistanceDegree;
-
-	void UpdateCameraDistance();
-
-private:
-	core::array<MapObject*> MapObjectList;
-};
+//#########################################################################
+//MapSpaceView
 
 void MapSpaceView::AddObject(SpaceObject* spaceObject, SceneNode* node)
 {
@@ -1588,9 +1783,9 @@ void MapSpaceView::Init()
 	UpdateCameraDistance();
 }
 
-void MapSpaceView::Update(f64 time)
+void MapSpaceView::Update(f64 frameDeltaTime)
 {
-	if (eventReceiver->IsKeyDown(irr::KEY_ESCAPE))
+	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
 		gameRoot->ActivateRealSpace();
 	
 	
@@ -1641,53 +1836,65 @@ void MapSpaceView::Close()
 }
 
 
-void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView)
+//#########################################################################
+//FTLView
+
+void FTLView::Init()
 {
-	u32 i;
+	videoDriver = gameRoot->GetVideoDriver();
+	device = gameRoot->GetDevice();
+	eventReceiver = gameRoot->GetEventReceiver();
+
+	playerShip = gameRoot->GetPlayerShip();
+
 	sceneManager->clear();
-	for (i=0;i<SpaceObjectList.size();i++)
+
+	SceneNode* node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
+	if (node)
 	{
-		vector3d position = SpaceObjectList[i]->GetPosition();
-		//SpaceObjectList[i]->UpdateSceneNode();
+		node->setScale(core::vector3df(1.f));
+		node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
+		node->setMaterialFlag(video::EMF_LIGHTING, false);
+		node->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
 
-		SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
-		if (sceneNode2)
-		{
-			sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
-			sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
-			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
-			//sizeMarker  = .07;
-			sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
-			mapView->AddObject(SpaceObjectList[i],sceneNode2);
-		}
-		SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,SpaceObjectList[i]->GetName().c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
-		sceneNode3->setPosition(vector3df(5.f,1.0f,0));
-
+		node->setRotation(vector3df(0,0,(f32)playerShip->GetRotation()));
 	}
-	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
-	camera->setFOV(.7f);
-	camera->setTarget(vector3df(0,0,0));
-	camera->setPosition(vector3df(0,0,-100.f));
-	camera->setFarValue(200.f);
 
+	irr::scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
+	if (camera)
+	{
+		camera->setPosition(vector3df(0,0,-20.f));
+		camera->setTarget(vector3df(0));
+		camera->setFOV(0.7f);
+	}
+
+	//sceneManager->addSceneNode(
 }
 
-
-
-
-/*
-void SpaceObject::Accelerate(vector3d acceleration, f32 time)
+void FTLView::Update(f64 frameDeltaTime)
 {
-	speed += acceleration*time;
+	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE) || playerShip->GetMotionType()!=SpaceObject::MOTION_FTL)
+	{
+		//TODO: split to premature and manual drop out
+		DisplayMessage(L"Drop out of FTL\r\n");
+		playerShip->BreakFTL(100.0);
+		gameRoot->ActivateRealSpace();
+	}
+
+	gamePhysics->Update(frameDeltaTime);
+
+	videoDriver->beginScene(true, true, video::SColor(255,20,200,20));
+	sceneManager->drawAll();
+	videoDriver->endScene();
 }
 
-void SpaceObject::LinearMotion(f32 time)
+void FTLView::Close()
 {
-	position += speed*time;
-}*/
+	sceneManager->drop();
+}
 
-
-
+//#########################################################################
+//DG_Game
 
 
 // Processes parameters and initializes the game
@@ -1756,6 +1963,12 @@ int DG_Game::Init(int Count, char **Arguments) {
 
 	SectorMap->Init();
 
+
+	FTLSpace = new FTLView();
+	FTLSpace->SetRoot(this);
+	FTLSpace->SetSceneManager(smgr->createNewSceneManager()); //drop in FTLSpace::Close
+	FTLSpace->SetPhysics(gamePhysics);
+	FTLSpace->Init();
 
 
 	lastFPS = -1;
@@ -1860,6 +2073,7 @@ void DG_Game::Close() {
 	//Close views
 	RealSpace->Close();
 	SectorMap->Close();
+	FTLSpace->Close();
 
 	device->drop();
 }
@@ -1875,6 +2089,17 @@ void DG_Game::ActivateRealSpace()
 	activeView = RealSpace;
 }
 
+void DG_Game::ActivateFTL()
+{
+	FTLSpace->Init();
+	activeView = FTLSpace;
+}
+
+//#########################################################################
+
+
+//#########################################################################
+//main()
 
 /*
 The event receiver for keeping the pressed keys is ready, the actual responses
@@ -1902,6 +2127,3 @@ int main(int ArgumentCount, char **Arguments) {
 	return 0;
 }
 
-/*
-That's it. Compile and play around with the program.
-**/
