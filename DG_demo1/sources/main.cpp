@@ -67,13 +67,15 @@ coding demo1:
 110619: ADD: map of starsystem
 110620: ADD: zoom on map, labels on map (yet looks terrible)
 110621: CHG: discretization effect elimitated
-110621: REM: thrust and speed indicators
+110621: REM: thrust and speed indicators removed
 110622: CHG: removed SetDevice e.t.c. from *View classes
 110622: CHG: removed setPosition for camera each frame
 110623: CHG: declarations and methods rearranged - now: class list; class declarations; methods, sorted by classes; main
 110623: ADD: license info added
 110623: ADD: simple FTL jump
 110623: ADD: DisplayMessage method via console
+110624: ADD: thrust restored as flame burst
+110624: CHG: GameView::Init split into ::Init and ::Activate
 
 
 DONE:
@@ -90,17 +92,21 @@ DONE:
 + removed SetDevice e.t.c. from *View classes - use GetDevice from DG_Game object, provided by SetRoot
 + removed setPosition for camera each frame
 + simple FTL jump
++ new thrust - flame, by resizable mesh
++ split GameView::Init into ::Init(...) and ::Activate(...)
 
 TODO
--2split GameView::Init into ::Init(...) and ::Activate(...)
--3new thrust - flame, by resizable mesh
-
-- message list
+- messages on main screen
 - zoom map around arbitrary point, starting with ship
 - display more info about orbit - shape, min/max distance (with fall estimation), period
 
 -?orbiting of gravity-domination body by orbital parameters, not simple euler
 
+- thrust flame as sub-object to SpaceObject
+- galaxy-wide physics checker
+- resource handler
+- HUD
+- auto-zoom camera - to show ship and nearest object
 - camera further from system, than 4M? (degree=4000) - requires remastering scene
 - planet rotation around it's axis
 - backcull of stars - to display then ship inside
@@ -128,7 +134,7 @@ CONTROL:
 A/D - rotate
 W/S - thrust
 Space - breaking (autopilot) relative to distant stars
-1/2/3/4 - different thrust levels (1 - highest, 4 - lowest)
+1/2/3/4/5/6 - different thrust levels (1 - highest, 6 - lowest)
 O - orbiting (around object which produce max graviry force at player's ship)
 Up/Down - zoom
 Tab - switch to map
@@ -470,6 +476,7 @@ class GameView
 {
 public:
 	virtual void Init() {};
+	virtual void Activate() {};
 	virtual void Update(f64 frameDeltaTime) {};
 	virtual void Close() {};
 
@@ -495,6 +502,7 @@ class RealSpaceView : public GameView
 {
 public:
 	void Init();
+	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
 
@@ -509,7 +517,8 @@ private:
 	SpaceObject* playerShip;
 	f64 playerThrust;
 
-	scene::ICameraSceneNode * camera;
+	scene::ICameraSceneNode* camera;
+	SceneNode* playerShipThrust;
 	//scene::IParticleSystemSceneNode * playerThrustParticles;
 	//scene::IParticleEmitter*  playerThrustEmitter;
 	//scene::IParticleSystemSceneNode* motionIndicator;
@@ -532,6 +541,7 @@ class MapSpaceView : public GameView
 {
 public:
 	void Init();
+	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
 	void AddObject(SpaceObject* spaceObject, SceneNode* node);
@@ -548,11 +558,14 @@ class FTLView : public GameView
 {
 public:
 	void Init();
+	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
 
 private:
 	SpaceObject* playerShip;
+	SceneNode* playerShipNode;
+	scene::ICameraSceneNode* camera;
 };
 
 //#########################################################################
@@ -1407,7 +1420,7 @@ SpaceObject* StarSystemConstructor::MakeShip()
 	if (node)
 	{
 		//node->setPosition(core::vector3df(0,0,30));
-		node->setScale(core::vector3df(3,3,3));
+		node->setScale(core::vector3df(1.f));
 		//node->setMaterialTexture(0, driver->getTexture(RESOURCE_PATH"/crate0.jpg"));
 		node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
 		//node->setMaterialTexture(1, driver->getTexture(RESOURCE_PATH"/ships.png"));
@@ -1537,6 +1550,21 @@ void RealSpaceView::Init()
 	motionIndicator->setMaterialType(video::EMT_TRANSPARENT_VERTEX_ALPHA);
 	*/
 
+	playerShipThrust = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/thrust1.irrmesh"));
+	if (playerShipThrust)
+	{
+		playerShipThrust->setScale(core::vector3df(1.f));
+		playerShipThrust->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire.bmp"));
+		playerShipThrust->setMaterialFlag(video::EMF_LIGHTING, false);
+		playerShipThrust->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
+		playerShipThrust->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR);
+		playerShipThrust->setParent(playerShip->GetNode());
+		playerShipThrust->setPosition(vector3df(-0.45f,0.f,-0.1f));
+		playerShipThrust->setScale(vector3df(2.0f,0.5f,1.0f));
+		playerShipThrust->setVisible(false);
+	}
+
+
 
 	/*
 	// create a particle system 2
@@ -1611,6 +1639,10 @@ void RealSpaceView::Init()
 	UpdateCameraDistance();
 }
 
+void RealSpaceView::Activate()
+{
+}
+
 void RealSpaceView::Update(f64 frameDeltaTime)
 {
 	vector3d playerPosition;// = node->getPosition();
@@ -1644,6 +1676,10 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		playerThrust = 0.01;
 	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_4))
 		playerThrust = 0.001;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_5))
+		playerThrust = 0.0001;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_6))
+		playerThrust = 0.00001;
 
 	if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
 		playerShip->AutopilotBreak();
@@ -1675,21 +1711,33 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	//someShip->SetControl(20.f,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
 
 	
-	/*
+	
 	f64 thrust = playerShip->GetThrust();
 	if (thrust!=0)
 	{
-		//vector3d emitterDirection=.001*playerShip->GetSpeed()-thrust*.000001*playerShip->GetDirection();
-		vector3d emitterDirection=-thrust*.000001*playerShip->GetDirection();
+		f32 thrustScale;
+		if (thrust>0)
+		{
+			thrustScale = (f32)(.2+log(thrust+1.0));
+			playerShipThrust->setScale(vector3df((f32)thrustScale,0.5f,1.f));
+		}
+		else
+		{
+			thrustScale = (f32)(-.2-log(1.0-thrust));
+			playerShipThrust->setScale(vector3df((f32)thrustScale,-0.5f,1.f));
+		}
+		playerShipThrust->setVisible(true);
 
-		playerThrustParticles->setEmitter(playerThrustEmitter);
-		playerThrustEmitter->setDirection(vector3df((f32)emitterDirection.X,(f32)emitterDirection.Y,0));
+		//vector3d emitterDirection=-thrust*.000001*playerShip->GetDirection();
+
+		//playerThrustParticles->setEmitter(playerThrustEmitter);
+		//playerThrustEmitter->setDirection(vector3df((f32)emitterDirection.X,(f32)emitterDirection.Y,0));
 	}
 	else
 	{
-		//playerThrust->setVisible(false);
-		playerThrustParticles->setEmitter(0);
-	}*/
+		playerShipThrust->setVisible(false);
+		//playerThrustParticles->setEmitter(0);
+	}
 
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
 		if (cameraDistanceDegree<4000)
@@ -1700,7 +1748,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 
 	if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
-		if (cameraDistanceDegree>0)
+		if (cameraDistanceDegree>-100)
 		{
 			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
 			cameraDistanceDegree--;
@@ -1776,7 +1824,10 @@ void MapSpaceView::Init()
 	videoDriver = gameRoot->GetVideoDriver();
 	device = gameRoot->GetDevice();
 	eventReceiver = gameRoot->GetEventReceiver();
+}
 
+void MapSpaceView::Activate()
+{
 	MapObjectList.clear();
 	gamePhysics->MakeMap(sceneManager,videoDriver,this);
 	cameraDistanceDegree = 5500;
@@ -1845,22 +1896,18 @@ void FTLView::Init()
 	device = gameRoot->GetDevice();
 	eventReceiver = gameRoot->GetEventReceiver();
 
-	playerShip = gameRoot->GetPlayerShip();
-
 	sceneManager->clear();
 
-	SceneNode* node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
-	if (node)
+	playerShipNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
+	if (playerShipNode)
 	{
-		node->setScale(core::vector3df(1.f));
-		node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
-		node->setMaterialFlag(video::EMF_LIGHTING, false);
-		node->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
-
-		node->setRotation(vector3df(0,0,(f32)playerShip->GetRotation()));
+		playerShipNode->setScale(core::vector3df(1.f));
+		playerShipNode->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
+		playerShipNode->setMaterialFlag(video::EMF_LIGHTING, false);
+		playerShipNode->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
 	}
 
-	irr::scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
+	camera = sceneManager->addCameraSceneNode();
 	if (camera)
 	{
 		camera->setPosition(vector3df(0,0,-20.f));
@@ -1868,6 +1915,13 @@ void FTLView::Init()
 		camera->setFOV(0.7f);
 	}
 
+}
+
+void FTLView::Activate()
+{
+	playerShip = gameRoot->GetPlayerShip();
+
+	playerShipNode->setRotation(vector3df(0,0,(f32)playerShip->GetRotation()));
 	//sceneManager->addSceneNode(
 }
 
@@ -1960,7 +2014,6 @@ int DG_Game::Init(int Count, char **Arguments) {
 	//SectorMap->SetVideoDriver(driver);
 	//SectorMap->SetEventReceiver(&receiver);
 	SectorMap->SetPhysics(gamePhysics);
-
 	SectorMap->Init();
 
 
@@ -2078,20 +2131,21 @@ void DG_Game::Close() {
 	device->drop();
 }
 
-void DG_Game::ActivateMap()
-{
-	SectorMap->Init();
-	activeView = SectorMap;
-}
-
 void DG_Game::ActivateRealSpace()
 {
+	RealSpace->Activate();
 	activeView = RealSpace;
+}
+
+void DG_Game::ActivateMap()
+{
+	SectorMap->Activate();
+	activeView = SectorMap;
 }
 
 void DG_Game::ActivateFTL()
 {
-	FTLSpace->Init();
+	FTLSpace->Activate();
 	activeView = FTLSpace;
 }
 
