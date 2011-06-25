@@ -76,6 +76,7 @@ coding demo1:
 110623: ADD: DisplayMessage method via console
 110624: ADD: thrust restored as flame burst
 110624: CHG: GameView::Init split into ::Init and ::Activate
+110625: CHG: attempt to fix wchar_t and %s issues for Linux
 
 
 DONE:
@@ -189,7 +190,7 @@ typedef scene::ISceneNode    SceneNode;
 //#########################################################################
 //global functions
 
-text_string print_f64(f64 value, wchar_t* format)
+text_string print_f64(f64 value, const wchar_t* format)
 {
 	wchar_t tmp[255];
 	swprintf(tmp, 255, format, value);
@@ -1484,7 +1485,7 @@ void StarSystemConstructor::AddMarker(SpaceObject* toObject, u32 type)
 
 void GameView::DisplayMessage(text_string message)
 {
-	wprintf(L"DG: %s",message);
+	wprintf(L"DG: %ws",message.c_str());
 }
 
 
