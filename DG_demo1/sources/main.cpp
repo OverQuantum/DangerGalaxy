@@ -76,7 +76,11 @@ coding demo1:
 110623: ADD: DisplayMessage method via console
 110624: ADD: thrust restored as flame burst
 110624: CHG: GameView::Init split into ::Init and ::Activate
-110625: CHG: attempt to fix wchar_t and %s issues for Linux
+110625: FIX: wchar_t and %s issues for Linux
+110626: ADD: PlayerShip, Galaxy, GalaxyStarSystem
+110626: ADD: maxGravityCheckRadiusSQ + simplified check of gravity using that
+110626: CHG: StarSystemConstructor->ResourceManager
+110626: unf: working on leaving star system and returning there
 
 
 DONE:
@@ -120,6 +124,9 @@ minor:
 - better speed indicator
 - exponential fading of light sources (?)
 
+
+CONSIDER:
+- change check of vector length to bounding-box - max(X,Y,Z)  - ex. for radius of star system and so on
 
 QUESTIONS
 - how display map-info above map - gui or adjust billboard?
@@ -175,6 +182,9 @@ using namespace irr;
 #define TWO_PI 6.2831853
 #define G_CONSTANT 66.7384
 #define LIGHTSPEED 300000.0
+#define LIGHTYEAR 9460730472.5808
+#define STAR_SYSTEM_RADIUS 0.1
+
 
 
 //types
@@ -185,6 +195,8 @@ typedef core::stringw   text_string;
 //DangerGalaxy works in double, so f64
 typedef core::vector3d<f32>  vector3df;
 typedef core::vector3d<f64>  vector3d;
+typedef core::vector2d<s32>  vector2ds;
+typedef core::vector2d<f64>  vector2d;
 typedef scene::ISceneNode    SceneNode;
 
 //#########################################################################
@@ -204,13 +216,17 @@ class MyEventReceiver;
 class GravityInfo;
 class SpaceObject;
 class GamePhysics;
-class StarSystemConstructor;
+//class StarSystemConstructor;
 class DG_Game;
 class GameView;
 class RealSpaceView;
 class MapObject;
 class MapSpaceView;
 class FTLView;
+class PlayerShip;
+class Galaxy;
+class GalaxyStarSystem;
+class ResourceManager;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -350,7 +366,7 @@ class SpaceObject {
 		void UpdateSceneNode();
 		void UpdateSceneNode(SpaceObject* centerSceneObject);
 		void UpdateMarkerNode(f64 cameraDistance);
-	private:
+	protected:
 		bool isEmitGravity;//for calulcation of gravity field. Gravity is emitted by massive objects - stars, planets, moons, black holes, asteroids. May be by specific weapons or traps
 		bool isAffectedByGravity;//for using gravity field. Affected in game engine are ships.
 		bool isVisibleToPlayer;//object is visible for player. Invisible are small objects, cloacked, unexplored and so on
@@ -384,31 +400,59 @@ class SpaceObject {
 		//vector3d acceleration; //
 };
 
+//GamePhysics - calculates movement, collision, gravity and so on
 class GamePhysics {
 	public:
-		f64 globalTime;
+		f64 globalTime;//TODO: move field into private area
+
+		bool IsInterstellar() {return isInterstellar;}
+		vector2d GetGalaxyCoordinatesOfCenter() {return galaxyCoordinatesOfCenter;}
+
+		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
+		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
+		void SetPlayerShip(PlayerShip* newPlayerShip) {playerShip = newPlayerShip;}
+
 		void Update(f64 time);
 		void UpdateNodes(SpaceObject* centerSceneObject);
 		void AddObject(SpaceObject* newObject);
 		void UpdateMarkers(f64 cameraDistance);
 		void UpdateMapMarkers(f64 mapScale);
+		
 		vector3d GetGravityAcceleration(vector3d location);
 		GravityInfo* GetGravityInfo(vector3d location);
+		
 		bool IsFTLPossible(vector3d location);
+		//bool IsOutOfStarSystem(vector3d location);
+		bool CheckLeaveStarSystem();
+
+		void GoInterstellar();
+		void GoStarSystem();
+
 		void MakeMap(scene::ISceneManager* sceneManager, video::IVideoDriver* videoDriver, MapSpaceView* mapView);
 	private:
-		core::array<SpaceObject*> SpaceObjectList;
+		bool isInterstellar;//Nothing except ship
+		f64 maxGravityCheckRadiusSQ; //if object is farther from this radius, then we could skip checking of gravity for FTL, radius squared as it is much easier to check this way
+
+		PlayerShip* playerShip;
+		core::array<SpaceObject*> listObjects;
+		vector2d galaxyCoordinatesOfCenter;
 };
 
-class StarSystemConstructor
+//ResourceManager - manage game resource
+class ResourceManager
 {
 	public:
-		void SetupConstructor(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver);
+		void Setup(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver);
+		void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
+
 		void MakeSimpleSystem();
 		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
 		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
 		SpaceObject* MakeShip();
+		SpaceObject* LoadNodesForShip(SpaceObject* ship);
 		void AddMarker(SpaceObject* toObject, u32 type);
+
+		SceneNode* NewShipNode();
 
 	private:
 		GamePhysics* physics;
@@ -416,6 +460,7 @@ class StarSystemConstructor
 		video::IVideoDriver* videoDriver;
 };
 
+//DG_Game - game root, hold everything else
 class DG_Game {
 
 	public:
@@ -430,8 +475,9 @@ class DG_Game {
 
 		IrrlichtDevice* GetDevice() {return device;}
 		video::IVideoDriver* GetVideoDriver() {return driver;}
+		ResourceManager* GetResourceManager() {return resourceManager;}
 		MyEventReceiver* GetEventReceiver() {return receiver;}
-		SpaceObject* GetPlayerShip() {return playerShip;}
+		PlayerShip* GetPlayerShip() {return playerShip;}
 	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
 	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
 
@@ -450,8 +496,10 @@ class DG_Game {
 	private:
 		//f64 MOVEMENT_SPEED;
 		// Flags
+		ResourceManager* resourceManager;
+		Galaxy* wholeGalaxy;
 
-		SpaceObject* playerShip;
+		PlayerShip* playerShip;
 
 		IrrlichtDevice* device;
 		u32 then;
@@ -473,6 +521,7 @@ class DG_Game {
 		GameView* activeView;
 };
 
+//GameView - interface-like class for different game views
 class GameView
 {
 public:
@@ -497,8 +546,10 @@ protected:
 	IrrlichtDevice* device;
 	scene::ISceneManager* sceneManager;
 	video::IVideoDriver* videoDriver;
+	ResourceManager* resourceManager;
 };
 
+//RealSpaceView - to render RealSpace
 class RealSpaceView : public GameView
 {
 public:
@@ -510,12 +561,14 @@ public:
 	f64 GetCameraDistance() {return cameraDistance;}
 	s32 cameraDistanceDegree;
 
+	void Clean();
+
 	void UpdateCameraDistance();
 
 private:
 	f64 cameraDistance;
 
-	SpaceObject* playerShip;
+	PlayerShip* playerShip;
 	f64 playerThrust;
 
 	scene::ICameraSceneNode* camera;
@@ -526,6 +579,7 @@ private:
 	gui::IGUIStaticText* simpleTextToDisplay;
 };
 
+//MapObject - single object on map (for MapSpaceView)
 class MapObject
 {
 public:
@@ -538,6 +592,7 @@ private:
 	SceneNode* sceneNode; //Irrlich renderable object
 };
 
+//MapSpaceView - for drawing map of RealSpace
 class MapSpaceView : public GameView
 {
 public:
@@ -555,6 +610,7 @@ private:
 	core::array<MapObject*> MapObjectList;
 };
 
+//FTLView - to render fly on FTL
 class FTLView : public GameView
 {
 public:
@@ -568,6 +624,63 @@ private:
 	SceneNode* playerShipNode;
 	scene::ICameraSceneNode* camera;
 };
+
+//PlayerShip - hold all information about player and his ship
+class PlayerShip : public SpaceObject
+{
+public:
+	PlayerShip();
+
+	vector2d GetGalaxyCoordinates() {return galaxyCoordinates;}
+
+	void SetGalaxyCoordinates(vector2d newPosition) {galaxyCoordinates = newPosition;}
+
+	void UpdateGalaxyCoordinates();
+
+private:
+	vector2d galaxyCoordinates;
+};
+
+//Galaxy - hold main information about whole Galaxy
+class Galaxy
+{
+public:
+	void Init();//creation
+	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);
+
+private:
+	core::array<GalaxyStarSystem*> knownStars;//TODO: in future replace array by seed-based generator
+};
+
+//Information about 1 star system in the galaxy
+class GalaxyStarSystem
+{
+public:
+	vector2d GetGalaxyCoordinates() {return galaxyCoordinates;}
+	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
+	text_string GetName() {return name;}
+
+	static GalaxyStarSystem* RandomStar(vector2ds quadrantCoordinates);
+private:
+	vector2d galaxyCoordinates;
+	vector2ds galaxyQuadrant;
+	text_string name;
+};
+
+/*
+class ResourceManager
+{
+public:
+	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
+	void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
+
+	SceneNode* MakeShip();
+
+private:
+	scene::ISceneManager* sceneManager;
+	video::IVideoDriver* videoDriver;
+};*/
+
 
 //#########################################################################
 //Class methods
@@ -1055,9 +1168,9 @@ void GamePhysics::Update(f64 time)
 {
 	u32 i;
 	globalTime += time;
-	for (i=0;i<SpaceObjectList.size();i++)
+	for (i=0;i<listObjects.size();i++)
 	{
-		SpaceObjectList[i]->UpdatePhysics(time);
+		listObjects[i]->UpdatePhysics(time);
 		//SpaceObjectList[i]->UpdateSceneNode();
 	}
 }
@@ -1065,10 +1178,10 @@ void GamePhysics::Update(f64 time)
 void GamePhysics::UpdateNodes(SpaceObject* centerSceneObject)
 {
 	u32 i;
-	for (i=0;i<SpaceObjectList.size();i++)
+	for (i=0;i<listObjects.size();i++)
 	{
 		//SpaceObjectList[i]->UpdatePhysics(time);
-		SpaceObjectList[i]->UpdateSceneNode(centerSceneObject);
+		listObjects[i]->UpdateSceneNode(centerSceneObject);
 	}
 }
 
@@ -1076,9 +1189,9 @@ void GamePhysics::UpdateNodes(SpaceObject* centerSceneObject)
 void GamePhysics::UpdateMarkers(f64 cameraDistance)
 {
 	u32 i;
-	for (i=0;i<SpaceObjectList.size();i++)
+	for (i=0;i<listObjects.size();i++)
 	{
-		SpaceObjectList[i]->UpdateMarkerNode(cameraDistance);
+		listObjects[i]->UpdateMarkerNode(cameraDistance);
 	}
 }
 
@@ -1088,7 +1201,7 @@ void GamePhysics::UpdateMapMarkers(f64 mapScale)
 
 void GamePhysics::AddObject(SpaceObject* newObject)
 {
-	SpaceObjectList.push_back(newObject);
+	listObjects.push_back(newObject);
 	newObject->SetPhysics(this);
 }
 
@@ -1096,13 +1209,13 @@ vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 {
 	u32 i;
 	vector3d acceleration = vector3d(0,0,0);
-	for (i=0;i<SpaceObjectList.size();i++)
-		if (SpaceObjectList[i]->IsEmittingGravity())
+	for (i=0;i<listObjects.size();i++)
+		if (listObjects[i]->IsEmittingGravity())
 		{
 			//vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
 			//f64 distance = vectorDirection.getLength();
 			//acceleration += 66.7*vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance);
-			acceleration += SpaceObjectList[i]->GetGravityAcceleration(location);
+			acceleration += listObjects[i]->GetGravityAcceleration(location);
 		}
 	return acceleration;
 }
@@ -1120,24 +1233,24 @@ GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 	SpaceObject* secondMaxGravityObject =0;
 	//f64 orbitSemimajorAxis, orbitEccentricity;
 
-	for (i=0;i<SpaceObjectList.size();i++)
-		if (SpaceObjectList[i]->IsEmittingGravity())
+	for (i=0;i<listObjects.size();i++)
+		if (listObjects[i]->IsEmittingGravity())
 		{
 			//vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
 			//f64 distance = vectorDirection.getLength();
 			//gravity = (vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance)).getLength();
-			gravity = SpaceObjectList[i]->GetGravityAcceleration(location).getLength();
+			gravity = listObjects[i]->GetGravityAcceleration(location).getLength();
 			if (gravity>maxGravity)
 			{
 				secondMaxGravity = maxGravity;
 				secondMaxGravityObject = maxGravityObject;
 				maxGravity=gravity;
-				maxGravityObject = SpaceObjectList[i];
+				maxGravityObject = listObjects[i];
 			}
 			else if (gravity>secondMaxGravity)
 			{
 				secondMaxGravity = gravity;
-				secondMaxGravityObject = SpaceObjectList[i];
+				secondMaxGravityObject = listObjects[i];
 			}
 		}
 
@@ -1156,9 +1269,9 @@ void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDrive
 {
 	u32 i;
 	sceneManager->clear();
-	for (i=0;i<SpaceObjectList.size();i++)
+	for (i=0;i<listObjects.size();i++)
 	{
-		vector3d position = SpaceObjectList[i]->GetPosition();
+		vector3d position = listObjects[i]->GetPosition();
 		//SpaceObjectList[i]->UpdateSceneNode();
 
 		SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
@@ -1169,9 +1282,9 @@ void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDrive
 			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
 			//sizeMarker  = .07;
 			sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
-			mapView->AddObject(SpaceObjectList[i],sceneNode2);
+			mapView->AddObject(listObjects[i],sceneNode2);
 		}
-		SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,SpaceObjectList[i]->GetName().c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
+		SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,listObjects[i]->GetName().c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
 		sceneNode3->setPosition(vector3df(5.f,1.0f,0));
 
 	}
@@ -1185,23 +1298,56 @@ void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDrive
 
 bool GamePhysics::IsFTLPossible(vector3d location)
 {
+	if (location.getLengthSQ()>maxGravityCheckRadiusSQ)
+		return true;
+
 	f64 grav = GetGravityAcceleration(location).getLengthSQ();
 	if (grav>1e-5)
 		return false;
 	return true;
 }
 
-//#########################################################################
-//StarSystemConstructor
+/*
+bool GamePhysics::IsOutOfStarSystem(vector3d location)
+{
+	if (location.getLengthSQ()>maxGravityCheckRadiusSQ)
+		return true;
+	return false;
+}*/
 
-void StarSystemConstructor::SetupConstructor(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver)
+bool GamePhysics::CheckLeaveStarSystem()
+{
+	if (isInterstellar) return false;//already left
+	if (playerShip->GetPosition().getLengthSQ()>maxGravityCheckRadiusSQ)
+		return true;//GoInterstellar();
+	return false;
+
+}
+
+void GamePhysics::GoInterstellar()
+{
+	if (isInterstellar) return;//already there
+	listObjects.clear();
+	isInterstellar=true;
+	listObjects.push_back((SpaceObject*)playerShip);
+}
+
+void GamePhysics::GoStarSystem()
+{
+	isInterstellar = false;
+}
+
+//#########################################################################
+//ResourceManager
+
+void ResourceManager::Setup(GamePhysics* newPhysics, scene::ISceneManager* smgr, video::IVideoDriver* driver)
 {
 	physics = newPhysics;
 	sceneManager = smgr;
 	videoDriver = driver;
 }
 
-void StarSystemConstructor::MakeSimpleSystem()
+void ResourceManager::MakeSimpleSystem()
 {
 	f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
 	f64 planetOrbits[11]={0.0,0.39,0.72,1.00,1.52,5.20,9.54,19.22,30.06,45.0};
@@ -1302,7 +1448,7 @@ void StarSystemConstructor::MakeSimpleSystem()
 	//someShip->rotationSpeed = 20.f;
 }
 
-SpaceObject* StarSystemConstructor::MakeStar(f64 radius, s32 polygons)
+SpaceObject* ResourceManager::MakeStar(f64 radius, s32 polygons)
 {
 	SpaceObject* newStar = new SpaceObject();
 	SceneNode * sceneNode;
@@ -1371,7 +1517,7 @@ SpaceObject* StarSystemConstructor::MakeStar(f64 radius, s32 polygons)
 	return newStar;
 }
 
-SpaceObject* StarSystemConstructor::MakePlanet(f64 radius, s32 polygons)
+SpaceObject* ResourceManager::MakePlanet(f64 radius, s32 polygons)
 {
 	SpaceObject* newPlanet = new SpaceObject();
 	SceneNode * sceneNode;
@@ -1412,41 +1558,45 @@ SpaceObject* StarSystemConstructor::MakePlanet(f64 radius, s32 polygons)
 	AddMarker(newPlanet,0);
 
 	return newPlanet;
-
 }
 
-SpaceObject* StarSystemConstructor::MakeShip()
+SpaceObject* ResourceManager::LoadNodesForShip(SpaceObject* ship)
 {
-	SceneNode* node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
-	if (node)
-	{
-		//node->setPosition(core::vector3df(0,0,30));
-		node->setScale(core::vector3df(1.f));
-		//node->setMaterialTexture(0, driver->getTexture(RESOURCE_PATH"/crate0.jpg"));
-		node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
-		//node->setMaterialTexture(1, driver->getTexture(RESOURCE_PATH"/ships.png"));
-		node->setMaterialFlag(video::EMF_LIGHTING, false);
-		//node->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR);
-		node->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
-		//node->setMaterialType(video::EMT_ONETEXTURE_BLEND);
-		//node->getMaterial(0).MaterialTypeParam = pack_texureBlendFunc(video::EBF_ONE, video::EBF_ZERO);
-	}
-	//node = smgr->addSphereSceneNode(3);
-	//node->setMaterialTexture(0, driver->getTexture(RESOURCE_PATH"/wall.bmp"));
-	//node->setMaterialFlag(video::EMF_WIREFRAME, true);
-
-	SpaceObject* ship = new SpaceObject();
-	ship->SetNode(node);
-	ship->SetMotionType(SpaceObject::MOTION_NAVIGATION);
-	ship->SetGravity(false,true);
-	physics->AddObject(ship);
-
+	ship->SetNode(NewShipNode());
 	AddMarker(ship,1);
 
 	return ship;
 }
 
-void StarSystemConstructor::AddMarker(SpaceObject* toObject, u32 type)
+
+SpaceObject* ResourceManager::MakeShip()
+{
+	SpaceObject* ship = new SpaceObject();
+	ship->SetMotionType(SpaceObject::MOTION_NAVIGATION);
+
+	ship->SetGravity(false,true);
+	physics->AddObject(ship);
+
+	LoadNodesForShip(ship);
+
+	return ship;
+}
+
+SceneNode* ResourceManager::NewShipNode()
+{
+	SceneNode* node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
+	if (node)
+	{
+		node->setScale(core::vector3df(1.f));
+		node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
+		node->setMaterialFlag(video::EMF_LIGHTING, false);
+		node->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
+	}
+
+	return node;
+}
+
+void ResourceManager::AddMarker(SpaceObject* toObject, u32 type)
 {
 	//scene::IBillboardSceneNode * sceneNode2 = sceneManager->addBillboardSceneNode(toObject->GetNode());
 	//SceneNode * sceneNode2 = sceneManager->addBillboardSceneNode(toObject->GetNode());
@@ -1694,7 +1844,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	{
 		if (gamePhysics->IsFTLPossible(playerShip->GetPosition()))
 		{
-			playerShip->JumpToFTL(10.0);
+			playerShip->JumpToFTL(1000.0);
 			gameRoot->ActivateFTL();
 		}
 		else
@@ -1796,6 +1946,12 @@ void RealSpaceView::UpdateCameraDistance()
 
 }
 
+void RealSpaceView::Clean()
+{
+	sceneManager->clear();
+	//sceneManager-> (playerShip->GetNode());
+}
+
 //#########################################################################
 //MapObject
 
@@ -1894,11 +2050,17 @@ void MapSpaceView::Close()
 void FTLView::Init()
 {
 	videoDriver = gameRoot->GetVideoDriver();
-	device = gameRoot->GetDevice();
+	//device = gameRoot->GetDevice();
 	eventReceiver = gameRoot->GetEventReceiver();
+	resourceManager = gameRoot->GetResourceManager();
 
 	sceneManager->clear();
 
+	resourceManager->SetSceneManager(sceneManager);
+
+	playerShipNode  = resourceManager->NewShipNode();
+
+	/*
 	playerShipNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
 	if (playerShipNode)
 	{
@@ -1906,7 +2068,7 @@ void FTLView::Init()
 		playerShipNode->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
 		playerShipNode->setMaterialFlag(video::EMF_LIGHTING, false);
 		playerShipNode->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
-	}
+	}*/
 
 	camera = sceneManager->addCameraSceneNode();
 	if (camera)
@@ -1928,10 +2090,15 @@ void FTLView::Activate()
 
 void FTLView::Update(f64 frameDeltaTime)
 {
-	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE) || playerShip->GetMotionType()!=SpaceObject::MOTION_FTL)
+	if (playerShip->GetMotionType()!=SpaceObject::MOTION_FTL)
 	{
-		//TODO: split to premature and manual drop out
 		DisplayMessage(L"Drop out of FTL\r\n");
+		playerShip->BreakFTL(10.0);
+		gameRoot->ActivateRealSpace();
+	}
+	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
+	{
+		DisplayMessage(L"Manuial exit from FTL\r\n");
 		playerShip->BreakFTL(100.0);
 		gameRoot->ActivateRealSpace();
 	}
@@ -1955,11 +2122,21 @@ void FTLView::Close()
 // Processes parameters and initializes the game
 int DG_Game::Init(int Count, char **Arguments) {
 	// ask user for driver
+
+	wholeGalaxy = new Galaxy();
+	wholeGalaxy->Init();
+
+	vector2d startGalaxyCoord = vector2d(0);
+	GalaxyStarSystem* startStarSystem = wholeGalaxy->GetStarSystem(vector2ds(0,0));
+	if (startStarSystem)
+	{
+		startGalaxyCoord = startStarSystem->GetGalaxyCoordinates();
+	}
 	
 	gamePhysics = new GamePhysics;
 	gamePhysics->globalTime = 0;
-
-
+	gamePhysics->SetGalaxyCoordinatesOfCenter(startGalaxyCoord);
+	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS*STAR_SYSTEM_RADIUS*LIGHTYEAR*LIGHTYEAR);
 
 
 	/*
@@ -1985,28 +2162,34 @@ int DG_Game::Init(int Count, char **Arguments) {
 	gameMode  = 0;
 
 
-	StarSystemConstructor* ssc = new StarSystemConstructor();
-	ssc->SetupConstructor(gamePhysics,smgr,driver);
-	ssc->MakeSimpleSystem();
+	RealSpace = new RealSpaceView();
+	RealSpace->SetRoot(this);
+	RealSpace->SetSceneManager(smgr);
+	RealSpace->SetPhysics(gamePhysics);
 
-	playerShip = ssc->MakeShip();
+	resourceManager = new ResourceManager();
+	resourceManager->Setup(gamePhysics,smgr,driver);
+	resourceManager->MakeSimpleSystem();
+
+	//playerShip = (PlayerShip*)resourceManager->MakeShip();
+	playerShip = new PlayerShip();
+	resourceManager->LoadNodesForShip((SpaceObject*)playerShip);
+	gamePhysics->AddObject((SpaceObject*)playerShip);
+	playerShip->SetGravity(false,true);
+	playerShip->SetMotionType(SpaceObject::MOTION_NAVIGATION);
 	playerShip->SetPosition(vector3d(0,1300,0));
 	playerShip->SetRotation(90);
 	playerShip->SetSpeed(vector3d(-320.28,0,0));
 	playerShip->SetMaxThrust(100000,150);
 	playerShip->SetName(L"Player");
 
+	gamePhysics->SetPlayerShip(playerShip);
+	gamePhysics->GoStarSystem();
 
-	RealSpace = new RealSpaceView();
-	RealSpace->SetRoot(this);
-	RealSpace->SetSceneManager(smgr);
-	//RealSpace->SetDevice(device);
-	//RealSpace->SetVideoDriver(driver);
-	//RealSpace->SetEventReceiver(receiver);
-	RealSpace->SetPhysics(gamePhysics);
 
 	RealSpace->Init();
 	activeView = RealSpace;
+
 
 	SectorMap = new MapSpaceView();
 	SectorMap->SetRoot(this);
@@ -2053,51 +2236,18 @@ void DG_Game::Update() {
 	f64 frameDeltaTime = (f64)(now - then) / 1000.0; // Time in seconds
 	then = now;
 
-	if (frameDeltaTime>0.02) frameDeltaTime = 0.02;
+	if (frameDeltaTime>0.02) frameDeltaTime = 0.02;//50 fps minimum, or slowdown game
 
 	activeView->Update(frameDeltaTime);
 
-	/*
-	switch (gameMode)
+	playerShip->UpdateGalaxyCoordinates();
+
+	if (gamePhysics->CheckLeaveStarSystem())
 	{
-	case 0:
-		{
-			break;
-		}
-	case 1:
-		{
-			if (receiver.IsKeyDown(irr::KEY_ESCAPE))
-				gameMode = 0;
-			
-			if(receiver.IsKeyDown(irr::KEY_UP))
-				if (cameraMapDistanceDegree<4000)
-				{
-					cameraMapDistanceDegree++;
-
-					f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
-					gamePhysics->UpdateMapMarkers(mapScale);
-				}
-
-			if(receiver.IsKeyDown(irr::KEY_DOWN))
-				if (cameraMapDistanceDegree>0)
-				{
-					//cameraDistance *= 1.f*(1.f-frameDeltaTime);
-					cameraMapDistanceDegree--;
-					//UpdateCameraDistance();
-					f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
-					gamePhysics->UpdateMapMarkers(mapScale);
-
-				}
-
-			driver->beginScene(true, true, video::SColor(255,20,20,20));
-			sceneManagerMap->drawAll();
-			driver->endScene();
-			break;
-		}
-	default:
-		break;
+		gamePhysics->GoInterstellar();
+		//RealSpace->Clean();
 	}
-	*/
+
 
 	int fps = driver->getFPS();
 
@@ -2134,6 +2284,13 @@ void DG_Game::Close() {
 
 void DG_Game::ActivateRealSpace()
 {
+	if (gamePhysics->IsInterstellar())
+	{
+		RealSpace->Clean();
+		RealSpace->Init();
+		gamePhysics->SetGalaxyCoordinatesOfCenter(playerShip->GetGalaxyCoordinates());
+		gamePhysics->GoStarSystem();
+	}
 	RealSpace->Activate();
 	activeView = RealSpace;
 }
@@ -2151,7 +2308,61 @@ void DG_Game::ActivateFTL()
 }
 
 //#########################################################################
+//PlayerShip
 
+PlayerShip::PlayerShip()
+{
+	SpaceObject();
+	galaxyCoordinates = vector2d(0);
+}
+
+void PlayerShip::UpdateGalaxyCoordinates()
+{
+	galaxyCoordinates = physics->GetGalaxyCoordinatesOfCenter();
+	galaxyCoordinates.X += position.X / LIGHTYEAR;
+	galaxyCoordinates.Y += position.Y / LIGHTYEAR;
+}
+
+//#########################################################################
+//Galaxy
+
+void Galaxy::Init()
+{
+	s32 x,y;
+	for (y=0;y<2;y++)
+	for (x=0;x<2;x++)
+	{
+		GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(vector2ds(x,y));
+		knownStars.push_back(newSystem);
+	}
+	
+	//knownStars.
+}
+
+GalaxyStarSystem* Galaxy::GetStarSystem(vector2ds coordinates)
+{
+	u32 i;
+	for (i=0;i<knownStars.size();i++)
+	{
+		if (coordinates==knownStars[i]->GetGalaxyQuadrant())
+			return knownStars[i];
+	}
+	return 0;
+}
+
+//#########################################################################
+//GalaxyStarSystem
+
+GalaxyStarSystem* GalaxyStarSystem::RandomStar(vector2ds quadrantCoordinates)
+{
+	GalaxyStarSystem* newSystem = new GalaxyStarSystem();
+	newSystem->name = "Star";
+	newSystem->galaxyQuadrant = quadrantCoordinates;
+	newSystem->galaxyCoordinates.X = quadrantCoordinates.X+0.5;
+	newSystem->galaxyCoordinates.Y = quadrantCoordinates.Y+0.5;
+	
+	return newSystem;
+}
 
 //#########################################################################
 //main()
