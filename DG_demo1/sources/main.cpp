@@ -83,7 +83,9 @@ coding demo1:
 110627: CHG: Leaving star system
 110627: ADD: Dump galaxy coordinates of ship into log
 110627: CHG: getting videoDriver and so on is moved from DG_Game to ResourceManager
-110627: unf: Entering star systems after departing another
+110628: ADD: Entering star systems after departing another
+110628: CHG: Changing views reorganized into viewStack
+110628: unf: Advanced check of FTL break due to gravity
 
 
 
@@ -185,19 +187,31 @@ using namespace irr;
 
 
 //defines
-
 #define RESOURCE_PATH	"media"
 #define CoeffDegreesToRadians  0.01745329
 #define TWO_PI 6.2831853
+
+//Distances is in 1000 km, so k=10^6  
+//Time is in 1000 seconds - k=1000
+//Mass is in 10^24 kg - k=10^24
+
+//Gravitational constant
+//G = 6.67384(80)*10^-11 N * (m/kg)^2 = .. [m*m*m/kg*s^2]
+//Ggame = G * 10^-18/(10^-24 * 10^-6) = G * 10^12 = 66.7384
 #define G_CONSTANT 66.7384
+
+//speed of light in vacuum, c
 #define LIGHTSPEED 300000.0
+
+//Light-year, exact value
 #define LIGHTYEAR 9460730472.5808
+
+//Radius of star system in light-years (used to enter/leave star system check)
 #define STAR_SYSTEM_RADIUS 0.1
 
 
 
 //types
-
 typedef core::stringw   text_string;
 
 //Irrlicht works in float, so f32
@@ -236,6 +250,7 @@ class PlayerShip;
 class Galaxy;
 class GalaxyStarSystem;
 class ResourceManager;
+class InfoFTL;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -431,6 +446,7 @@ class GamePhysics {
 		GravityInfo* GetGravityInfo(vector3d location);
 		
 		bool IsFTLPossible(vector3d location);
+		InfoFTL* CheckFTLBreak(vector3d start, vector3d end);
 		//bool IsOutOfStarSystem(vector3d location);
 		bool CheckLeaveStarSystem();
 
@@ -482,13 +498,32 @@ class DG_Game {
 
 	public:
 
+		enum ViewType {
+			VIEW_NONE,
+			VIEW_REALSPACE,
+			VIEW_SECTOR_MAP,
+			VIEW_FTL,
+		};
+
 		int Init(int Count, char **Arguments);
 		void Update();
 		void Close();
 
+		/*
+		//Deprecated
 		void ActivateMap();
 		void ActivateRealSpace();
 		void ActivateFTL();
+		*/
+
+		s32 AcviateView(ViewType newView);
+		s32 CloseView(ViewType oldView);
+		s32 SwitchView(ViewType newView);
+
+		bool IsViewActive(ViewType checkedView);
+
+		void GoInterstellar();
+		void GoStarSystem(GalaxyStarSystem* toStarSystem);
 
 		ResourceManager* GetResourceManager() {return resourceManager;}
 
@@ -516,6 +551,8 @@ class DG_Game {
 
 		PlayerShip* playerShip;
 
+		GalaxyStarSystem* currentStarSystem;
+
 		IrrlichtDevice* device;
 		u32 then;
 		GamePhysics * gamePhysics;
@@ -524,16 +561,20 @@ class DG_Game {
 		MyEventReceiver* receiver;
 		scene::ISceneManager* smgr;
 		video::IVideoDriver* driver;
-		int lastFPS;
+		s32 lastFPS;
 
-		int gameMode;//0 - flying, 1 - map
+		s32 gameMode;//0 - flying, 1 - map
 
+		core::array<ViewType*> viewStack;
 
 		RealSpaceView* RealSpace;
 		MapSpaceView* SectorMap;
 		FTLView* FTLSpace;
 
 		GameView* activeView;
+
+		void InternalAcviateView(ViewType newView);
+
 };
 
 //GameView - interface-like class for different game views
@@ -682,6 +723,14 @@ private:
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
 	text_string name;
+};
+
+//Keep information about FTL fly over line segment
+class InfoFTL
+{
+public:
+	vector3d breakPoint;//valid if FTL fly must be breaked
+	bool breaked;
 };
 
 /*
@@ -1057,11 +1106,20 @@ void SpaceObject::UpdatePhysics(f64 time)
 		break;
 	case MOTION_FTL:
 		{
-			position += speed*time;
-
-			//TODO: more advanced check, calc minimum distance to all grav-emit objects and check FTL limit against that
-			if (!(physics->IsFTLPossible(position)))
+			vector3d position2 = position + speed*time;
+			InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2);
+			if (checkFTL->breaked)
+			{
+				position = checkFTL->breakPoint;
 				motionType = MOTION_NAVIGATION;
+			}
+			else
+			{
+				position = position2;
+			}
+
+			//if (!(physics->IsFTLPossible(position)))
+			//	motionType = MOTION_NAVIGATION;
 		}
 	default:
 		break;
@@ -1110,11 +1168,6 @@ vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 		//return vector3d(0);//simply nothing
 		return G_CONSTANT*vectorDirection*mass/(gravityMinRadius*gravityMinRadius*gravityMinRadius);
 	}
-	//G = 6.67384(80)*10^-11 N * (m/kg)^2 = .. [m*m*m/kg*s^2]
-	//distances is in 1000 km, so k=10^6  
-	//time is in 1000 seconds - k=1000
-	//mass is in 10^24 kg - k=10^24
-	//Ggame = G * 10^-18/(10^-24 * 10^-6) = G * 10^12 = 
 	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance);
 }
 
@@ -1315,14 +1368,45 @@ void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDrive
 
 bool GamePhysics::IsFTLPossible(vector3d location)
 {
+	if (isInterstellar)
+		return true;
 	if (location.getLengthSQ()>maxGravityCheckRadiusSQ)
 		return true;
 
 	f64 grav = GetGravityAcceleration(location).getLengthSQ();
-	if (grav>1e-5)
+	if (grav>1e-5) //acceleration^2 = 1e-5 <=> gravity = -5.75646 "dgr"
 		return false;
 	return true;
 }
+
+InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end)
+{
+	InfoFTL* info = new InfoFTL();
+	info->breaked = false;
+
+	do
+	{
+		if (isInterstellar)
+			break;
+
+		//TODO: more advanced check, calc minimum distance to all grav-emit objects and check FTL limit against that
+		if (!IsFTLPossible(start))
+		{
+			info->breaked = true;
+			info->breakPoint = start;
+			break;
+		}
+
+		if (!IsFTLPossible(end))
+		{
+			info->breaked = true;
+			info->breakPoint = end;
+			break;
+		}
+	} while(false);
+	return info;
+}
+
 
 /*
 bool GamePhysics::IsOutOfStarSystem(vector3d location)
@@ -1425,7 +1509,7 @@ void ResourceManager::MakeSimpleSystem()
 	//planet->SetMass(planetMass[0]);
 	//planet->SetGravity(true,false);
 
-	for (int i=0;i<10;i++)
+	for (s32 i=0;i<10;i++)
 	{
 		//planetSizes - in 6370 km
 		//planetOrbits - in 150M km
@@ -1882,14 +1966,17 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_TAB))
-		gameRoot->ActivateMap();
+		//gameRoot->ActivateMap();
+		gameRoot->AcviateView(DG_Game::VIEW_SECTOR_MAP);
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
 	{
 		if (gamePhysics->IsFTLPossible(playerShip->GetPosition()))
 		{
 			playerShip->JumpToFTL(1000.0);
-			gameRoot->ActivateFTL();
+			//gameRoot->ActivateFTL();
+			gameRoot->SwitchView(DG_Game::VIEW_FTL);
+
 		}
 		else
 		{
@@ -2039,7 +2126,9 @@ void MapSpaceView::Activate()
 void MapSpaceView::Update(f64 frameDeltaTime)
 {
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
-		gameRoot->ActivateRealSpace();
+		//gameRoot->ActivateRealSpace();
+		gameRoot->CloseView(DG_Game::VIEW_SECTOR_MAP);
+
 	
 	
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
@@ -2141,13 +2230,15 @@ void FTLView::Update(f64 frameDeltaTime)
 	{
 		DisplayMessage(L"Drop out of FTL");
 		playerShip->BreakFTL(10.0);
-		gameRoot->ActivateRealSpace();
+		//gameRoot->ActivateRealSpace();
+		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
 	}
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
 	{
 		DisplayMessage(L"Manuial exit from FTL");
 		playerShip->BreakFTL(100.0);
-		gameRoot->ActivateRealSpace();
+		//gameRoot->ActivateRealSpace();
+		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
 	}
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
@@ -2177,17 +2268,17 @@ void FTLView::Close()
 
 
 // Processes parameters and initializes the game
-int DG_Game::Init(int Count, char **Arguments) {
+s32 DG_Game::Init(s32 Count, char **Arguments) {
 	// ask user for driver
 
 	wholeGalaxy = new Galaxy();
 	wholeGalaxy->Init();
 
 	vector2d startGalaxyCoord = vector2d(0);
-	GalaxyStarSystem* startStarSystem = wholeGalaxy->GetStarSystem(vector2ds(0,0));
-	if (startStarSystem)
+	currentStarSystem = wholeGalaxy->GetStarSystem(vector2ds(0,0));
+	if (currentStarSystem)
 	{
-		startGalaxyCoord = startStarSystem->GetGalaxyCoordinates();
+		startGalaxyCoord = currentStarSystem->GetGalaxyCoordinates();
 	}
 	
 	gamePhysics = new GamePhysics;
@@ -2195,6 +2286,7 @@ int DG_Game::Init(int Count, char **Arguments) {
 	gamePhysics->SetGalaxyCoordinatesOfCenter(startGalaxyCoord);
 	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS*STAR_SYSTEM_RADIUS*LIGHTYEAR*LIGHTYEAR);
 
+	viewStack.clear();
 
 	/*
 	video::E_DRIVER_TYPE driverType=driverChoiceConsole();
@@ -2247,7 +2339,7 @@ int DG_Game::Init(int Count, char **Arguments) {
 	resourceManager->MakeSimpleSystem();
 
 
-	activeView = RealSpace;
+	//activeView = RealSpace;
 
 
 	SectorMap = new MapSpaceView();
@@ -2273,6 +2365,8 @@ int DG_Game::Init(int Count, char **Arguments) {
 	// how long it was since the last frame
 	then = device->getTimer()->getTime();
 
+	//ActivateRealSpace();
+	AcviateView(VIEW_REALSPACE);
 
 
 	Done = false;
@@ -2305,13 +2399,29 @@ void DG_Game::Update() {
 
 	if (gamePhysics->CheckLeaveStarSystem())
 	{
-		activeView->DisplayMessage(L"Star system departed");
+		{
+			text_string message = L"Departed star system ";
+			message += currentStarSystem->GetName();
+			RealSpace->DisplayMessage(message);
+		}
 		gamePhysics->GoInterstellar();
+
+		if (IsViewActive(VIEW_REALSPACE))
+			GoInterstellar();
 		//RealSpace->Clean();
 	}
 
+	if (gamePhysics->IsInterstellar())
+	{
+		GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
+		if (nearStarSystem)
+		{
+			GoStarSystem(nearStarSystem);
+		}
+	}
 
-	int fps = driver->getFPS();
+
+	s32 fps = driver->getFPS();
 
 	if (lastFPS != fps)
 	{
@@ -2344,49 +2454,12 @@ void DG_Game::Close() {
 	device->drop();
 }
 
+/*
 void DG_Game::ActivateRealSpace()
 {
 	if (gamePhysics->IsInterstellar())
 	{
-		vector2d playerGalaxyCoordinates;
-		GalaxyStarSystem* nearStarSystem;
-		RealSpace->Clean();
-		RealSpace->Init();
-
-		resourceManager->SetSceneManager(smgr);
-		resourceManager->MakeBackground();
-
-		playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
-		nearStarSystem = wholeGalaxy->GetNearStarSystem(playerGalaxyCoordinates);
-
-		if (nearStarSystem)
-		{
-			//There is star system near
-			vector2d playerRelativeCoordinates;
-			vector2d nearStarSystemGalaxyCoordinates;
-			resourceManager->MakeSimpleSystem();
-
-			nearStarSystemGalaxyCoordinates = nearStarSystem->GetGalaxyCoordinates();
-			
-			playerRelativeCoordinates = (playerGalaxyCoordinates-nearStarSystemGalaxyCoordinates)*LIGHTYEAR;
-			gamePhysics->SetGalaxyCoordinatesOfCenter(nearStarSystemGalaxyCoordinates);
-			playerShip->SetPosition(vector3d(playerRelativeCoordinates.X,playerRelativeCoordinates.Y,0));
-
-			{
-				text_string message = L"Entered to system ";
-				message += nearStarSystem->GetName();
-				RealSpace->DisplayMessage(message);
-			}
-			gamePhysics->GoStarSystem();
-
-		}
-		else
-		{
-			//No star system near
-			gamePhysics->SetGalaxyCoordinatesOfCenter(playerGalaxyCoordinates);
-			playerShip->SetPosition(vector3d(0));
-		}
-
+		GoInterstellar();
 	}
 	RealSpace->Activate();
 	activeView = RealSpace;
@@ -2402,7 +2475,141 @@ void DG_Game::ActivateFTL()
 {
 	FTLSpace->Activate();
 	activeView = FTLSpace;
+}*/
+
+
+void DG_Game::GoInterstellar()
+{
+	vector2d playerGalaxyCoordinates;
+	s32 cameraDistance = RealSpace->cameraDistanceDegree;
+
+	currentStarSystem = 0;
+
+	RealSpace->Clean();
+	RealSpace->Init();
+
+	RealSpace->cameraDistanceDegree = cameraDistance;
+	RealSpace->UpdateCameraDistance();
+
+	resourceManager->SetSceneManager(smgr);
+	resourceManager->MakeBackground();
+	
+	playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
+
+	gamePhysics->SetGalaxyCoordinatesOfCenter(playerGalaxyCoordinates);
+	playerShip->SetPosition(vector3d(0));
 }
+
+void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
+{
+	s32 cameraDistance = RealSpace->cameraDistanceDegree;
+	vector2d playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
+
+	vector2d playerRelativeCoordinates;
+	vector2d nearStarSystemGalaxyCoordinates;
+
+	RealSpace->Clean();
+	RealSpace->Init();
+
+	resourceManager->SetSceneManager(smgr);
+	resourceManager->MakeBackground();
+
+	resourceManager->MakeSimpleSystem();
+
+	currentStarSystem = toStarSystem;
+
+	RealSpace->cameraDistanceDegree = cameraDistance;
+	RealSpace->UpdateCameraDistance();
+
+	nearStarSystemGalaxyCoordinates = toStarSystem->GetGalaxyCoordinates();
+	
+	playerRelativeCoordinates = (playerGalaxyCoordinates-nearStarSystemGalaxyCoordinates)*LIGHTYEAR;
+	gamePhysics->SetGalaxyCoordinatesOfCenter(nearStarSystemGalaxyCoordinates);
+	playerShip->SetPosition(vector3d(playerRelativeCoordinates.X,playerRelativeCoordinates.Y,0));
+
+	{
+		text_string message = L"Entered to system ";
+		message += toStarSystem->GetName();
+		RealSpace->DisplayMessage(message);
+	}
+	gamePhysics->GoStarSystem();
+}
+
+void DG_Game::InternalAcviateView(ViewType newView)
+{
+	switch(newView)
+	{
+	case VIEW_NONE:
+		break;
+	case VIEW_REALSPACE:
+		if (gamePhysics->IsInterstellar())
+		{
+			GoInterstellar();
+		}
+		RealSpace->Activate();
+		activeView = RealSpace;
+		break;
+	case VIEW_SECTOR_MAP:
+		SectorMap->Activate();
+		activeView = SectorMap;
+		break;
+	case VIEW_FTL:
+		FTLSpace->Activate();
+		activeView = FTLSpace;
+		break;
+	}
+}
+
+s32 DG_Game::AcviateView(ViewType newView)
+{
+	if (IsViewActive(newView)) return 1;//already opened
+	viewStack.push_back(new ViewType(newView));
+	InternalAcviateView(newView);
+	return 0;
+}
+
+s32 DG_Game::CloseView(ViewType oldView)
+{
+	ViewType currentView = *viewStack.getLast();
+	for (u32 i=0;i<viewStack.size();i++)
+	{
+		if (*viewStack[i]==oldView)
+		{
+			viewStack.erase(i);
+			if (currentView != *viewStack.getLast())
+			{
+				InternalAcviateView(*viewStack.getLast());
+			}
+			return 0;
+		}
+	}
+	return 1;
+}
+
+s32 DG_Game::SwitchView(ViewType newView)
+{
+	ViewType currentView = *viewStack.getLast();
+	if (newView==currentView)
+		return 0;//aready activated
+
+	viewStack[viewStack.size()-1] = new ViewType(newView);
+	InternalAcviateView(newView);
+
+	return 0;
+}
+
+bool DG_Game::IsViewActive(ViewType checkedView)
+{
+	for (u32 i=0;i<viewStack.size();i++)
+	{
+		if (*viewStack[i]==checkedView)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 
 //#########################################################################
 //PlayerShip
