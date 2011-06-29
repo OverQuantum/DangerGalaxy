@@ -85,7 +85,8 @@ coding demo1:
 110627: CHG: getting videoDriver and so on is moved from DG_Game to ResourceManager
 110628: ADD: Entering star systems after departing another
 110628: CHG: Changing views reorganized into viewStack
-110628: unf: Advanced check of FTL break due to gravity
+110629: ADD: Advanced check of FTL break due to gravity
+110629: ADD: maxFTLGravity moved from constant to SpaceObject
 
 
 
@@ -106,15 +107,16 @@ DONE:
 + new thrust - flame, by resizable mesh
 + split GameView::Init into ::Init(...) and ::Activate(...)
 + resource handler
++ entering star system must be checked during FTL fly, not on exit
++ FTL limit from constant to PlayerShip
++ playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 
 TODO
-- entering star system must be checked during FTL fly, not on exit
-
 - messages on main screen
 - zoom map around arbitrary point, starting with ship
 - display more info about orbit - shape, min/max distance (with fall estimation), period
 
--?orbiting of gravity-domination body by orbital parameters, not simple euler
+-1SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 
 - moving of some background at FTL
 - thrust flame as sub-object to SpaceObject
@@ -127,7 +129,6 @@ TODO
 - autopilot to travel to specific point
 - corona of star and atmosphere of planets by decal/billboard/etc
 - handling of errors
-? playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 minor:
 - remove overlapping of labels on map (how?)
 - better speed indicator
@@ -135,6 +136,7 @@ minor:
 
 
 CONSIDER:
+- orbiting of gravity-domination body by orbital parameters, not simple euler
 - change check of vector length to bounding-box - max(X,Y,Z)  - ex. for radius of star system and so on
 
 QUESTIONS
@@ -209,6 +211,10 @@ using namespace irr;
 //Radius of star system in light-years (used to enter/leave star system check)
 #define STAR_SYSTEM_RADIUS 0.1
 
+//Maximum time between frames, in seconds
+//Limits low FPS and slowdowns game if lower
+//0.02 gives 50 fps
+#define FRAME_TIME_MAX 0.02
 
 
 //types
@@ -354,6 +360,7 @@ class SpaceObject {
 		MotionType GetMotionType() {return motionType;}
 		//f32 GetMaxThrust() {return maxThrust;}
 		//f32 GetMaxRotationThrust() {return maxRotationThrust;}
+		f64 GetMaxFTLGravity() {return maxFTLGravity;}
 
 		SceneNode* GetNode() {return sceneNode;}
 
@@ -371,6 +378,7 @@ class SpaceObject {
 		void SetMassRadius(f64 newMassRadius) {gravityMinRadius = newMassRadius;}
 		void SetGravity(bool emit, bool affected) {isEmitGravity = emit,isAffectedByGravity = affected;}
 		void SetName(text_string newName) {name = newName;}
+		void SetMaxFTLGravity(f64 newGravity) {maxFTLGravity = newGravity;}
 		
 		//void SetThrust(f64 newThrust) {thrustPower = newThrust;}
 		//void SetRotationSpeed(f64 newRotSpeed) {rotationSpeed = newRotSpeed;}
@@ -414,6 +422,8 @@ class SpaceObject {
 		f64 sizeMarker;
 		f64 ftlSpeed;//in multiple of lightspeed
 
+		f64 maxFTLGravity;//Max acceleration for FTL possible
+
 		vector3d position;//current position in space, coordinates (zero at star system center of mass)
 		vector3d speed;//current motion speed, relative to "background stars"
 		f64 rotation;//rotation angle, degrees (zero is direction to down)
@@ -445,8 +455,11 @@ class GamePhysics {
 		vector3d GetGravityAcceleration(vector3d location);
 		GravityInfo* GetGravityInfo(vector3d location);
 		
-		bool IsFTLPossible(vector3d location);
-		InfoFTL* CheckFTLBreak(vector3d start, vector3d end);
+		//bool IsFTLPossible(vector3d location);
+		bool IsFTLPossible(vector3d location, f64 gravityLimit);
+
+		//InfoFTL* CheckFTLBreak(vector3d start, vector3d end);
+		InfoFTL* CheckFTLBreak(vector3d start, vector3d end, f64 gravityLimit);
 		//bool IsOutOfStarSystem(vector3d location);
 		bool CheckLeaveStarSystem();
 
@@ -854,8 +867,7 @@ SpaceObject::SpaceObject()
 	orbitalRadius = 1.0;
 	orbitalPeriod = 1.0;
 	orbitalEpochPhase = 0;
-
-
+	maxFTLGravity = 0.003;
 }
 
 vector3d SpaceObject::GetDirection()
@@ -1107,7 +1119,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 	case MOTION_FTL:
 		{
 			vector3d position2 = position + speed*time;
-			InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2);
+			InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2,maxFTLGravity);
 			if (checkFTL->breaked)
 			{
 				position = checkFTL->breakPoint;
@@ -1366,7 +1378,7 @@ void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDrive
 
 }
 
-bool GamePhysics::IsFTLPossible(vector3d location)
+bool GamePhysics::IsFTLPossible(vector3d location, f64 gravityLimit)
 {
 	if (isInterstellar)
 		return true;
@@ -1374,12 +1386,13 @@ bool GamePhysics::IsFTLPossible(vector3d location)
 		return true;
 
 	f64 grav = GetGravityAcceleration(location).getLengthSQ();
-	if (grav>1e-5) //acceleration^2 = 1e-5 <=> gravity = -5.75646 "dgr"
+	//if (grav>GRAVITY_MAX_FTL_SQ) 
+	if (grav>(gravityLimit*gravityLimit))
 		return false;
 	return true;
 }
 
-InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end)
+InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end, f64 gravityLimit)
 {
 	InfoFTL* info = new InfoFTL();
 	info->breaked = false;
@@ -1390,19 +1403,103 @@ InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end)
 			break;
 
 		//TODO: more advanced check, calc minimum distance to all grav-emit objects and check FTL limit against that
-		if (!IsFTLPossible(start))
+		if (!IsFTLPossible(start,gravityLimit))
 		{
 			info->breaked = true;
 			info->breakPoint = start;
 			break;
 		}
 
+		if (gravityLimit==0) //bad limit, but we should not check further
+			break;
+
+		vector3d moving = end-start;
+		vector3d perpendicularMoving = vector3d(moving.Y,-moving.X,0);
+		vector3d toObject;
+		f64 criticalRadiusSQToMass = G_CONSTANT/gravityLimit;
+		f64 criticalRadiusSQ;
+		f64 a,ia,mb2,c,D1,x1,x2;
+		//f64 minDistance;
+
+		//solving vector equation x*moving + R-crit = toObject
+		//R-crit = toObject - x*moving
+		//R-crit^2 = (toObject - x*moving)^2
+		//R-crit^2 = toObject^2 - 2*x*(moving*toObject) + x^2*moving^2
+		//a*x^2+b*x+c = 0
+		//a = moving^2, b = -2*(moving*toObject), c = toObject^2-R-crit^2
+		//D1 = (b/2)^2-a*c, x = (-(b/2) +- sqrt(D1))/a, if D>=0
+		//we need only 0<x<1
+
+		//a is equal for all object, we can calc it now
+		a = moving.getLengthSQ();
+		if (a==0) break;//a is zero, so start = end, nothing need to be check further
+		ia = 1.0/a;
+
+		for (u32 i=0;i<listObjects.size();i++)
+			if (listObjects[i]->IsEmittingGravity())
+			{
+				criticalRadiusSQ = criticalRadiusSQToMass*listObjects[i]->GetMass();
+				toObject = listObjects[i]->GetPosition()-start;
+				mb2 = toObject.dotProduct(moving); //mb2 = -b/2
+				c = toObject.getLengthSQ()-criticalRadiusSQ;
+				D1 = mb2*mb2-a*c;
+				if (D1<0) continue; //Discriminant < 0, no roots, we can skip object
+				D1 = sqrt(D1);
+				x1 = (mb2-D1)*ia;
+				x2 = (mb2+D1)*ia;
+
+				if (x1>1)//minimum root is larger than 1, object is far ahead
+					continue;
+				if (x2<0)//maximum root is less than zero, object is behind
+					continue;
+
+				//otherwise - we have roots inside segment (0,1), so FTL must be breaked
+				info->breaked = true;
+				if (x1<0)
+				{// x1<0, so in (0,1) is x2, we should break now
+					info->breakPoint = start;
+				}
+				else
+				{// x1>0, so x1 is in (0,1), we should break at reaching its position
+					info->breakPoint = start + x1*moving;
+				}
+				break;
+
+
+				/*
+				if (x1>=0 && x1<=1)
+				{
+					info->breaked = true;
+					info->breakPoint = start + x1*moving;
+					break;
+				}
+				if (x2>=0 && x2<=1)
+				{
+					info->breaked = true;
+					info->breakPoint = start + x2*moving;
+					break;
+				}
+
+				//
+				/*
+				toObject = listObjects[i]->GetPosition()-start;
+				minDistance = toObject.dotProduct(perpendicularMoving);
+				minDistance *= minDistance;
+				minDistance /= perpendicularMoving.getLengthSQ();
+				*/
+
+			}
+
+		/*
+		if (info->breaked)
+			break;
+
 		if (!IsFTLPossible(end))
 		{
 			info->breaked = true;
 			info->breakPoint = end;
 			break;
-		}
+		}*/
 	} while(false);
 	return info;
 }
@@ -1971,7 +2068,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
 	{
-		if (gamePhysics->IsFTLPossible(playerShip->GetPosition()))
+		if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
 		{
 			playerShip->JumpToFTL(1000.0);
 			//gameRoot->ActivateFTL();
@@ -2228,7 +2325,7 @@ void FTLView::Update(f64 frameDeltaTime)
 {
 	if (playerShip->GetMotionType()!=SpaceObject::MOTION_FTL)
 	{
-		DisplayMessage(L"Drop out of FTL");
+		DisplayMessage(L"Drop out of FTL due to high gravity");
 		playerShip->BreakFTL(10.0);
 		//gameRoot->ActivateRealSpace();
 		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
@@ -2329,6 +2426,9 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	playerShip->SetSpeed(vector3d(-320.28,0,0));
 	playerShip->SetMaxThrust(100000,150);
 	playerShip->SetName(L"Player");
+	playerShip->SetMaxFTLGravity(0.003138);
+	//acceleration = 0.003138 <=> gravity = -5.75 "dgr"
+
 
 	gamePhysics->SetPlayerShip(playerShip);
 	gamePhysics->GoStarSystem();
@@ -2389,7 +2489,7 @@ void DG_Game::Update() {
 	f64 frameDeltaTime = (f64)(now - then) / 1000.0; // Time in seconds
 	then = now;
 
-	if (frameDeltaTime>0.02) frameDeltaTime = 0.02;//50 fps minimum, or slowdown game
+	if (frameDeltaTime>FRAME_TIME_MAX) frameDeltaTime = FRAME_TIME_MAX;//50 fps minimum, or slowdown game
 
 	//Update game via current view
 	//Game physics is updated via view due to view-dependency behaviour of physics (i.e. physics not updated in case of viewing map)
@@ -2397,6 +2497,7 @@ void DG_Game::Update() {
 
 	playerShip->UpdateGalaxyCoordinates();
 
+	//Check that player fly too far from star system and it (system) could be unloaded
 	if (gamePhysics->CheckLeaveStarSystem())
 	{
 		{
@@ -2408,11 +2509,12 @@ void DG_Game::Update() {
 
 		if (IsViewActive(VIEW_REALSPACE))
 			GoInterstellar();
-		//RealSpace->Clean();
 	}
 
+	//Check that player reach border some star system and so this system should be loaded
 	if (gamePhysics->IsInterstellar())
 	{
+		//TODO: this is dump check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
 		GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
 		if (nearStarSystem)
 		{
