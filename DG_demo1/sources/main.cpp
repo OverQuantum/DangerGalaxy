@@ -88,6 +88,9 @@ coding demo1:
 110629: ADD: Advanced check of FTL break due to gravity
 110629: ADD: maxFTLGravity moved from constant to SpaceObject
 
+110829: FIX: text width on map adjusted to use font dimension
+110829: ADD: Nearest stars markers on map (via SpaceObjects)
+
 
 
 DONE:
@@ -112,9 +115,13 @@ DONE:
 + playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 
 TODO
+-0 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
+
+
 - messages on main screen
 - zoom map around arbitrary point, starting with ship
 - display more info about orbit - shape, min/max distance (with fall estimation), period
+- galaxy map
 
 -1SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 
@@ -717,6 +724,7 @@ public:
 	void Init();//creation
 	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);
 	GalaxyStarSystem* GetNearStarSystem(vector2d coordinates);
+	void AddNearStarSystems(GamePhysics * gamePhysics);
 
 private:
 	core::array<GalaxyStarSystem*> knownStars;//TODO: in future replace array by seed-based generator
@@ -893,8 +901,11 @@ void SpaceObject::UpdateSceneNode(SpaceObject* centerSceneObject)
 {
 	f32 positionX = (f32)(position.X - centerSceneObject->position.X);
 	f32 positionY = (f32)(position.Y - centerSceneObject->position.Y);
-	sceneNode->setPosition(vector3df(positionX,positionY,0));
-	sceneNode->setRotation(vector3df(0,0,(f32)rotation));
+	if (sceneNode)
+	{
+		sceneNode->setPosition(vector3df(positionX,positionY,0));
+		sceneNode->setRotation(vector3df(0,0,(f32)rotation));
+	}
 	if (sceneMarkerNode)
 	{
 		//TODO: optimize?
@@ -1366,8 +1377,15 @@ void GamePhysics::MakeMap(scene::ISceneManager* sceneManager, video::IVideoDrive
 			sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
 			mapView->AddObject(listObjects[i],sceneNode2);
 		}
-		SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,listObjects[i]->GetName().c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
-		sceneNode3->setPosition(vector3df(5.f,1.0f,0));
+		text_string label = listObjects[i]->GetName();
+		core::dimension2d<u32> labelSize = sceneManager->getGUIEnvironment()->getBuiltInFont()->getDimension(label.c_str());
+		SceneNode * sceneNode3 = sceneManager->addBillboardTextSceneNode(0,label.c_str(),sceneNode2,core::dimension2d<f32>(labelSize.Width*0.24f,2.0f));
+		
+		//SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,label.c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
+		
+		//getDimension(
+		sceneNode3->setPosition(vector3df(labelSize.Width*0.12f,1.0f,0));
+		//sceneNode3->setPosition(sceneNode3->getScale());
 
 	}
 	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
@@ -1524,15 +1542,20 @@ bool GamePhysics::CheckLeaveStarSystem()
 
 void GamePhysics::GoInterstellar()
 {
-	if (isInterstellar) return;//already there
+	//if (isInterstellar) return;//already there
+	//as in interstellar we see nearest stars as map objects
+
 	listObjects.clear();
 	isInterstellar=true;
-	listObjects.push_back((SpaceObject*)playerShip);
+	//listObjects.push_back((SpaceObject*)playerShip);
+	AddObject(playerShip);
 }
 
 void GamePhysics::GoStarSystem()
 {
+	listObjects.clear();
 	isInterstellar = false;
+	AddObject(playerShip);
 }
 
 //#########################################################################
@@ -2253,6 +2276,7 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 	//TODO: use resourceManager to render?
 	videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
 	sceneManager->drawAll();
+	device->getGUIEnvironment()->drawAll(); // draw the gui environment (the logo)
 	videoDriver->endScene();
 }
 
@@ -2431,6 +2455,9 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 
 	gamePhysics->SetPlayerShip(playerShip);
+
+	wholeGalaxy->AddNearStarSystems(gamePhysics);
+
 	gamePhysics->GoStarSystem();
 
 	RealSpace->Init();
@@ -2514,7 +2541,7 @@ void DG_Game::Update() {
 	//Check that player reach border some star system and so this system should be loaded
 	if (gamePhysics->IsInterstellar())
 	{
-		//TODO: this is dump check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
+		//TODO: this is dumb check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
 		GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
 		if (nearStarSystem)
 		{
@@ -2599,7 +2626,10 @@ void DG_Game::GoInterstellar()
 	playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
 
 	gamePhysics->SetGalaxyCoordinatesOfCenter(playerGalaxyCoordinates);
+	gamePhysics->GoInterstellar();
+
 	playerShip->SetPosition(vector3d(0));
+	wholeGalaxy->AddNearStarSystems(gamePhysics);
 }
 
 void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
@@ -2612,6 +2642,8 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 
 	RealSpace->Clean();
 	RealSpace->Init();
+
+	gamePhysics->GoStarSystem();
 
 	resourceManager->SetSceneManager(smgr);
 	resourceManager->MakeBackground();
@@ -2634,7 +2666,7 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 		message += toStarSystem->GetName();
 		RealSpace->DisplayMessage(message);
 	}
-	gamePhysics->GoStarSystem();
+	wholeGalaxy->AddNearStarSystems(gamePhysics);
 }
 
 void DG_Game::InternalAcviateView(ViewType newView)
@@ -2770,7 +2802,7 @@ GalaxyStarSystem* Galaxy::GetNearStarSystem(vector2d coordinates)
 	GalaxyStarSystem* minDistanceObject=0;
 	for (i=0;i<knownStars.size();i++)
 	{
-		//TODO: optimize by using 
+		//TODO: optimize by using (???)
 		distanceSQ = (coordinates-knownStars[i]->GetGalaxyCoordinates()).getLengthSQ();
 		if (distanceSQ<minDistanceSQ)
 		{
@@ -2779,6 +2811,27 @@ GalaxyStarSystem* Galaxy::GetNearStarSystem(vector2d coordinates)
 		}
 	}
 	return minDistanceObject;
+}
+
+void Galaxy::AddNearStarSystems(GamePhysics* gamePhysics)
+{
+	u32 i;
+	vector2d coordinates = gamePhysics->GetGalaxyCoordinatesOfCenter();
+	for (i=0;i<knownStars.size();i++)
+	{
+		SpaceObject * nearStar = new SpaceObject();
+		vector2d starPosition = (knownStars[i]->GetGalaxyCoordinates()-coordinates)*LIGHTYEAR;
+		nearStar->SetName(knownStars[i]->GetName());
+		nearStar->SetMotionType(SpaceObject::MOTION_NONE);
+		nearStar->SetPosition(vector3d(starPosition.X,starPosition.Y,0));
+		nearStar->SetNode(0);
+		//coordinates-knownStars[i]->GetGalaxyCoordinates())
+		gamePhysics->AddObject(nearStar);
+		//if (coordinates==knownStars[i]->GetGalaxyQuadrant())
+			//return knownStars[i];
+	}
+	return;
+
 }
 
 //#########################################################################
