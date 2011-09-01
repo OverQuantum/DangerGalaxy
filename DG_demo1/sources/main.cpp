@@ -90,8 +90,10 @@ coding demo1:
 
 110829: FIX: text width on map adjusted to use font dimension
 110829: ADD: Nearest stars markers on map (via SpaceObjects)
-
 110830: CHG: near stars markers on map is now non SpaceObjects
+110901: ADD: SHA1
+110901: ADD: DeterminedRandomGenerator
+110901: TMP: DeterminedRandomGenerator test printf
 
 
 DONE:
@@ -116,7 +118,8 @@ DONE:
 + playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 
 TODO
--0 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
+- RNGs and seeds
+-1 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
 
 
 - messages on main screen
@@ -124,7 +127,7 @@ TODO
 - display more info about orbit - shape, min/max distance (with fall estimation), period
 - galaxy map
 
--1SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
+-2SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 
 - moving of some background at FTL
 - thrust flame as sub-object to SpaceObject
@@ -138,10 +141,11 @@ TODO
 - corona of star and atmosphere of planets by decal/billboard/etc
 - handling of errors
 minor:
+- check SHA1 code for license
 - remove overlapping of labels on map (how?)
 - better speed indicator
 - exponential fading of light sources (?)
-
+- SHA1 - unfinalized hashing, incomplete bytes
 
 CONSIDER:
 - orbiting of gravity-domination body by orbital parameters, not simple euler
@@ -189,7 +193,7 @@ X - dump galaxy coordinates into log
 
 
 //includes
-
+#include <assert.h>
 #include <irrlicht.h>
 #include <SMaterial.h>
 
@@ -235,6 +239,7 @@ typedef core::vector3d<f64>  vector3d;
 typedef core::vector2d<s32>  vector2ds;
 typedef core::vector2d<f64>  vector2d;
 typedef scene::ISceneNode    SceneNode;
+//typedef unsigned long u32;
 
 //#########################################################################
 //global functions
@@ -265,6 +270,9 @@ class Galaxy;
 class GalaxyStarSystem;
 class ResourceManager;
 class InfoFTL;
+class SHA1;
+class DeterminedRandomGenerator;
+class UndeterminedRandomGenerator;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -759,6 +767,58 @@ class InfoFTL
 public:
 	vector3d breakPoint;//valid if FTL fly must be breaked
 	bool breaked;
+};
+
+//SHA-1 hasher
+class SHA1
+{
+public:
+	SHA1();//default constructor, also reset object
+	
+	void Reset();
+	u32 ProcessArrayFinal(u8* data, u32 dataLen);
+	u32 WriteHash(u8* outputData);
+private:
+	enum HasherStatus {
+		HASHER_RESET,
+		HASHER_SOMEDATA,
+		HASHER_FINISHED,
+	};
+
+	HasherStatus status;
+	u32 state[5];//internal state
+	u32 processedBytes;//how much data processed
+	void TransformBlock(u32* data);
+};
+
+//Generates determined stream of bytes
+class DeterminedRandomGenerator
+{
+//scheme:
+// SHA1 ( seed [32] | offset [4] ) -> 16 bytes
+public:
+	static const u32 seedLength = 32;
+	DeterminedRandomGenerator();
+
+	void SetSeed(u8* newSeed, u32 seedLen);//up to 32 bytes, zero-padded at the end
+	void GetSeed(u8* buffer);//return 32 bytes
+
+	void SetOffset(u32 newOffset);
+	u32 GetOffset() {return offset;}
+
+	u8 GenerateByte();//return 1 random byte and shifts offset to next
+	u8 GetByteByOffset(u32 byteOffset);//return random byte by offset
+	void GenerateBytes(u8* destination, u32 len);//write <len> bytes and shifts offset
+private:
+	static const u32 bufferLength = 64;
+	void GenerateBlock();
+	u8 hashBuffer[bufferLength];//seed of generator + space for forming data to hash
+
+	SHA1* hasher;
+
+	u32 offset;//offset of generator
+	u8 block[20];//generated block
+	u32 blockOffset;//offset of block
 };
 
 /*
@@ -2901,16 +2961,280 @@ GalaxyStarSystem* GalaxyStarSystem::RandomStar(vector2ds quadrantCoordinates)
 }
 
 //#########################################################################
+//SHA-1 - SHA-1 crypto hash
+
+template <class T> inline T rotlFixed(T x, unsigned int y)
+{
+    assert(y < sizeof(T)*8);
+    //if(y < sizeof(T)*8);
+    return (x<<y) | (x>>(sizeof(T)*8-y));
+}
+
+
+// start of Steve Reid's code
+
+#define blk0(i) (W[i] = data[i])
+#define blk1(i) (W[i&15] = rotlFixed(W[(i+13)&15]^W[(i+8)&15]^W[(i+2)&15]^W[i&15],1))
+
+#define f1(x,y,z) (z^(x&(y^z)))
+#define f2(x,y,z) (x^y^z)
+#define f3(x,y,z) ((x&y)|(z&(x|y)))
+#define f4(x,y,z) (x^y^z)
+
+/* (R0+R1), R2, R3, R4 are the different operations used in SHA1 */
+#define R0(v,w,x,y,z,i) z+=f1(w,x,y)+blk0(i)+0x5A827999+rotlFixed(v,5);w=rotlFixed(w,30);
+#define R1(v,w,x,y,z,i) z+=f1(w,x,y)+blk1(i)+0x5A827999+rotlFixed(v,5);w=rotlFixed(w,30);
+#define R2(v,w,x,y,z,i) z+=f2(w,x,y)+blk1(i)+0x6ED9EBA1+rotlFixed(v,5);w=rotlFixed(w,30);
+#define R3(v,w,x,y,z,i) z+=f3(w,x,y)+blk1(i)+0x8F1BBCDC+rotlFixed(v,5);w=rotlFixed(w,30);
+#define R4(v,w,x,y,z,i) z+=f4(w,x,y)+blk1(i)+0xCA62C1D6+rotlFixed(v,5);w=rotlFixed(w,30);
+
+//64 bytes
+void SHA1::TransformBlock(u32* data)
+{
+    register u32 W[16];//={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    /* Copy context->state[] to working vars */
+    register u32 a = state[0];
+    register u32 b = state[1];
+    register u32 c = state[2];
+    register u32 d = state[3];
+    register u32 e = state[4];
+    /* 4 rounds of 20 operations each. Loop unrolled. */
+    R0(a,b,c,d,e, 0); R0(e,a,b,c,d, 1); R0(d,e,a,b,c, 2); R0(c,d,e,a,b, 3);
+    R0(b,c,d,e,a, 4); R0(a,b,c,d,e, 5); R0(e,a,b,c,d, 6); R0(d,e,a,b,c, 7);
+    R0(c,d,e,a,b, 8); R0(b,c,d,e,a, 9); R0(a,b,c,d,e,10); R0(e,a,b,c,d,11);
+    R0(d,e,a,b,c,12); R0(c,d,e,a,b,13); R0(b,c,d,e,a,14); R0(a,b,c,d,e,15);
+    R1(e,a,b,c,d,16); R1(d,e,a,b,c,17); R1(c,d,e,a,b,18); R1(b,c,d,e,a,19);
+    R2(a,b,c,d,e,20); R2(e,a,b,c,d,21); R2(d,e,a,b,c,22); R2(c,d,e,a,b,23);
+    R2(b,c,d,e,a,24); R2(a,b,c,d,e,25); R2(e,a,b,c,d,26); R2(d,e,a,b,c,27);
+    R2(c,d,e,a,b,28); R2(b,c,d,e,a,29); R2(a,b,c,d,e,30); R2(e,a,b,c,d,31);
+    R2(d,e,a,b,c,32); R2(c,d,e,a,b,33); R2(b,c,d,e,a,34); R2(a,b,c,d,e,35);
+    R2(e,a,b,c,d,36); R2(d,e,a,b,c,37); R2(c,d,e,a,b,38); R2(b,c,d,e,a,39);
+    R3(a,b,c,d,e,40); R3(e,a,b,c,d,41); R3(d,e,a,b,c,42); R3(c,d,e,a,b,43);
+    R3(b,c,d,e,a,44); R3(a,b,c,d,e,45); R3(e,a,b,c,d,46); R3(d,e,a,b,c,47);
+    R3(c,d,e,a,b,48); R3(b,c,d,e,a,49); R3(a,b,c,d,e,50); R3(e,a,b,c,d,51);
+    R3(d,e,a,b,c,52); R3(c,d,e,a,b,53); R3(b,c,d,e,a,54); R3(a,b,c,d,e,55);
+    R3(e,a,b,c,d,56); R3(d,e,a,b,c,57); R3(c,d,e,a,b,58); R3(b,c,d,e,a,59);
+    R4(a,b,c,d,e,60); R4(e,a,b,c,d,61); R4(d,e,a,b,c,62); R4(c,d,e,a,b,63);
+    R4(b,c,d,e,a,64); R4(a,b,c,d,e,65); R4(e,a,b,c,d,66); R4(d,e,a,b,c,67);
+    R4(c,d,e,a,b,68); R4(b,c,d,e,a,69); R4(a,b,c,d,e,70); R4(e,a,b,c,d,71);
+    R4(d,e,a,b,c,72); R4(c,d,e,a,b,73); R4(b,c,d,e,a,74); R4(a,b,c,d,e,75);
+    R4(e,a,b,c,d,76); R4(d,e,a,b,c,77); R4(c,d,e,a,b,78); R4(b,c,d,e,a,79);
+    /* Add the working vars back into context.state[] */
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+    state[4] += e;
+    /* Wipe variables */
+    a = b = c = d = e = 0;
+    //  memset(W, 0, sizeof(W));
+}
+
+// end of Steve Reid's code
+
+
+//Default constructor
+SHA1::SHA1()
+{
+	Reset();
+}
+
+//Reset hasher to start
+void SHA1::Reset()
+{
+    state[0] = 0x67452301L;
+    state[1] = 0xEFCDAB89L;
+    state[2] = 0x98BADCFEL;
+    state[3] = 0x10325476L;
+    state[4] = 0xC3D2E1F0L;
+	status = HASHER_RESET;
+	processedBytes = 0;
+}
+
+u32 SHA1::ProcessArrayFinal(u8* data, u32 dataLen)
+{
+	u32 buffer[32];
+	u32 i,j,dlen2,dlen3;
+	u32 * data32=(u32*)data;
+	u8 * buffer_c=(u8*)buffer;
+	u8 * data2=(u8*)(buffer+16);
+	//u32 fulllen;
+
+	if (status==HASHER_FINISHED)
+		return 1;//error, hasher is finished
+
+	dlen3 = dataLen & 63;
+
+	dlen2 = 0xFFFFFFC0 & dataLen;
+
+	for (i=0;i<dlen2;i+=64)//do it as long as full 512-bit bloks exists
+	{
+		for (j=0;j<64;j+=4)
+		{
+			//Revert endians
+			buffer_c[j]=data[i+j+3];
+			buffer_c[j+1]=data[i+j+2];
+			buffer_c[j+2]=data[i+j+1];
+			buffer_c[j+3]=data[i+j];
+		}
+		TransformBlock(buffer);
+	}
+
+	processedBytes += dataLen;
+
+	//last data and padding
+	memset(data2,0,64);
+	memcpy(data2,data+dlen2,dlen3);
+	data2[dlen3]=0x80;//bit 1
+
+	for (j=0;j<64;j+=4)
+	{
+		buffer_c[j]=data2[j+3];
+		buffer_c[j+1]=data2[j+2];
+		buffer_c[j+2]=data2[j+1];
+		buffer_c[j+3]=data2[j];
+	}
+
+	if (dlen3>=56)
+	{//one more block needed
+		//pad block - zeros
+		TransformBlock(buffer);
+		memset(buffer,0,64);
+	}
+
+	//pad block - put len of original message in bits
+	buffer[14]=processedBytes>>29;
+	buffer[15]=processedBytes<<3;
+	TransformBlock(buffer);
+	status = HASHER_FINISHED;
+	return 0;
+}
+
+u32 SHA1::WriteHash(u8* outputData)
+{
+	u8* hash_c=(u8*)state;
+	u32 j;
+
+	for (j=0;j<20;j+=4)
+	{
+		outputData[j+3]=hash_c[j];
+		outputData[j+2]=hash_c[j+1];
+		outputData[j+1]=hash_c[j+2];
+		outputData[j+0]=hash_c[j+3];
+	}
+
+	if (status!=HASHER_FINISHED)
+		return 2;//internal status is returned, as hasher is not finished
+	return 0;//all OK
+}
+
+//#########################################################################
+//DeterminedRandomGenerator
+
+DeterminedRandomGenerator::DeterminedRandomGenerator()
+{
+	hasher = new SHA1();
+	offset = -1;
+	blockOffset = -1;
+	memset(hashBuffer,0,bufferLength);
+	//SetSeed(0,0);
+	SetOffset(0);
+}
+
+//up to 32 bytes, zero-padded at the end
+void DeterminedRandomGenerator::SetSeed(u8* newSeed, u32 seedLen)
+{
+	if (seedLen>seedLength)
+		seedLen = seedLength;
+	memset(hashBuffer,0,seedLength);
+	if (seedLen>0)
+		memcpy(hashBuffer,newSeed,seedLen);
+	blockOffset = -1;//invalidate block
+	GenerateBlock();
+}
+
+//return 32 bytes
+void DeterminedRandomGenerator::GetSeed(u8* buffer)
+{
+	memcpy(buffer,hashBuffer,seedLength);
+}
+
+void DeterminedRandomGenerator::SetOffset(u32 newOffset)
+{
+	offset = newOffset;
+	GenerateBlock();
+}
+
+//return 1 random byte and shifts offset to next
+u8 DeterminedRandomGenerator::GenerateByte()
+{
+	u8 rValue;
+	GenerateBlock();
+	rValue = block[offset-blockOffset];
+	offset++;
+	return rValue;
+}
+
+//return 1 byte by offset and shifts offset to next
+u8 DeterminedRandomGenerator::GetByteByOffset(u32 byteOffset)
+{
+	SetOffset(byteOffset);
+	return GenerateByte();
+}
+
+
+//write <len> bytes and shifts offset
+void DeterminedRandomGenerator::GenerateBytes(u8* destination, u32 len)
+{
+	u32 i;
+	for (i=0;i<len;i++)
+	{	//NOT OPTIMIZED
+		GenerateBlock();
+		destination[i]=block[offset-blockOffset];
+		offset++;
+	}
+}
+
+void DeterminedRandomGenerator::GenerateBlock()
+{
+	u32 newOffset = offset & 0xFFFFFFF0;
+	if (newOffset != blockOffset)
+	{
+		blockOffset = newOffset;
+		memcpy(hashBuffer+seedLength,&blockOffset,4);
+		hasher->Reset();
+		hasher->ProcessArrayFinal(hashBuffer,36);
+		hasher->WriteHash(block);
+	}
+}
+
+
+
+//#########################################################################
 //main()
 
-/*
-The event receiver for keeping the pressed keys is ready, the actual responses
-will be made inside the render loop, right before drawing the scene. So lets
-just create an irr::IrrlichtDevice and the scene node we want to move. We also
-create some other additional scene nodes, to show that there are also some
-different possibilities to move and animate scene nodes.
-*/
 int main(int ArgumentCount, char **Arguments) {
+
+	DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();
+	u8 test[32];
+
+	for (u32 i=0;i<32;i++)
+		test[i]=11;
+	pRNG->SetSeed(test,32);
+
+	printf("seed from 0 v1:");
+	for (u32 i=0;i<100;i++)
+		printf("%02X",pRNG->GenerateByte());
+	printf("\r\n");
+
+	pRNG->SetOffset(3);
+
+	printf("seed from 3 v2:");
+	for (u32 i=0;i<100;i++)
+		printf("%02X",pRNG->GetByteByOffset(i+3));
+	printf("\r\n");
+
+
 	DG_Game * game = new DG_Game();
 
 	// Initialize the game
