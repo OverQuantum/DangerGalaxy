@@ -93,6 +93,8 @@ coding demo1:
 110830: CHG: near stars markers on map is now non SpaceObjects
 110901: ADD: SHA1
 110901: ADD: DeterminedRandomGenerator
+110902: ADD: SetSeedWithCoordinates
+
 110901: TMP: DeterminedRandomGenerator test printf
 
 
@@ -801,6 +803,7 @@ public:
 	DeterminedRandomGenerator();
 
 	void SetSeed(u8* newSeed, u32 seedLen);//up to 32 bytes, zero-padded at the end
+	void SetSeedWithCoordinates(u8* newSeed, u32 seedLen, u32 x, u32 y);//up to 24 bytes, zero-padded at the end
 	void GetSeed(u8* buffer);//return 32 bytes
 
 	void SetOffset(u32 newOffset);
@@ -3153,6 +3156,20 @@ void DeterminedRandomGenerator::SetSeed(u8* newSeed, u32 seedLen)
 	GenerateBlock();
 }
 
+void DeterminedRandomGenerator::SetSeedWithCoordinates(u8* newSeed, u32 seedLen, u32 x, u32 y)
+{
+	if ((seedLen+8)>seedLength)
+		seedLen = seedLength-8;
+	memset(hashBuffer,0,seedLength);
+	if (seedLen>0)
+		memcpy(hashBuffer,newSeed,seedLen);
+	memcpy(hashBuffer+seedLength-8,&x,4);
+	memcpy(hashBuffer+seedLength-4,&y,4);
+	blockOffset = -1;//invalidate block
+	GenerateBlock();
+
+}
+
 //return 32 bytes
 void DeterminedRandomGenerator::GetSeed(u8* buffer)
 {
@@ -3220,16 +3237,17 @@ int main(int ArgumentCount, char **Arguments) {
 
 	for (u32 i=0;i<32;i++)
 		test[i]=11;
-	pRNG->SetSeed(test,32);
+	pRNG->SetSeedWithCoordinates(test,32,1,1);
 
-	printf("seed from 0 v1:");
+	printf("seed (1,1) from 0 v1:");
 	for (u32 i=0;i<100;i++)
 		printf("%02X",pRNG->GenerateByte());
 	printf("\r\n");
 
-	pRNG->SetOffset(3);
+	//pRNG->SetOffset(3);
+	pRNG->SetSeedWithCoordinates(test,32,1,2);
 
-	printf("seed from 3 v2:");
+	printf("seed (1,2) from 3 v2:");
 	for (u32 i=0;i<100;i++)
 		printf("%02X",pRNG->GetByteByOffset(i+3));
 	printf("\r\n");
