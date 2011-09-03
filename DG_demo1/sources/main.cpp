@@ -94,6 +94,9 @@ coding demo1:
 110901: ADD: SHA1
 110901: ADD: DeterminedRandomGenerator
 110902: ADD: SetSeedWithCoordinates
+110903: ADD: UndeterminedRandomGenerator
+110903: ADD: galaxySeed
+110903: ADD: more stars + name generator
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -195,6 +198,7 @@ X - dump galaxy coordinates into log
 
 
 //includes
+#include <time.h>
 #include <assert.h>
 #include <irrlicht.h>
 #include <SMaterial.h>
@@ -233,6 +237,7 @@ using namespace irr;
 
 //types
 typedef core::stringw   text_string;
+typedef unsigned __int64	u64;
 
 //Irrlicht works in float, so f32
 //DangerGalaxy works in double, so f64
@@ -743,7 +748,13 @@ public:
 	//void AddNearStarSystems(GamePhysics * gamePhysics);
 	void AddNearStarSystems(MapSpaceView* mapView);
 
+	u32 CheckStarPresence(vector2ds coordinates);
+
+	GalaxyStarSystem* GetStartStarSystem();
+
 private:
+	u8 galaxySeed[16];//seed of whole galaxy
+	DeterminedRandomGenerator* galaxyRNG;
 	core::array<GalaxyStarSystem*> knownStars;//TODO: in future replace array by seed-based generator
 };
 
@@ -798,6 +809,8 @@ class DeterminedRandomGenerator
 {
 //scheme:
 // SHA1 ( seed [32] | offset [4] ) -> 16 bytes
+
+//coordinated seed:  byte-seed [24] | x [4] | y [4]
 public:
 	static const u32 seedLength = 32;
 	DeterminedRandomGenerator();
@@ -814,7 +827,6 @@ public:
 	void GenerateBytes(u8* destination, u32 len);//write <len> bytes and shifts offset
 private:
 	static const u32 bufferLength = 64;
-	void GenerateBlock();
 	u8 hashBuffer[bufferLength];//seed of generator + space for forming data to hash
 
 	SHA1* hasher;
@@ -822,6 +834,35 @@ private:
 	u32 offset;//offset of generator
 	u8 block[20];//generated block
 	u32 blockOffset;//offset of block
+
+	void GenerateBlock();
+};
+
+//Generates undetermined stream of bytes
+class UndeterminedRandomGenerator
+{
+//scheme:
+// SHA1 ( previous-random [16] | random sources ) -> next 16 bytes
+
+public:
+	UndeterminedRandomGenerator();
+
+	void AddSeed(u8* newSeed, u32 seedLen);
+
+	u8 GenerateByte();//return 1 random byte
+	void GenerateBytes(u8* destination, u32 len);//write <len> bytes 
+
+private:
+	static const u32 bufferLength = 64;//full buffer
+	static const u32 blockLength = 16;//output part
+	u64 counter;
+
+	u8 hashBuffer[bufferLength];
+	u32 offset;//offset of generator inside block
+	SHA1* hasher;
+
+	void GenerateBlock();
+	void RehashBlock();
 };
 
 /*
@@ -2508,7 +2549,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	wholeGalaxy->Init();
 
 	vector2d startGalaxyCoord = vector2d(0);
-	currentStarSystem = wholeGalaxy->GetStarSystem(vector2ds(0,0));
+	currentStarSystem = wholeGalaxy->GetStartStarSystem();
 	if (currentStarSystem)
 	{
 		startGalaxyCoord = currentStarSystem->GetGalaxyCoordinates();
@@ -2881,15 +2922,54 @@ void Galaxy::Init()
 	s32 x,y;
 	s32 n = 0;
 	text_string starName;
-	for (y=0;y<2;y++)
-	for (x=0;x<2;x++)
+	vector2ds coordinates;
+
+	//TEMP
+	galaxySeed[0]=0x10;
+	galaxySeed[1]=0x12;
+	galaxySeed[2]=0x17;
+	galaxySeed[3]=0xF0;
+	galaxySeed[4]=0xE2;
+	galaxySeed[5]=0xC4;
+	galaxySeed[6]=0x66;
+	galaxySeed[7]=0x90;
+	memcpy(galaxySeed+8,galaxySeed,8);
+
+	galaxyRNG = new DeterminedRandomGenerator();
+
+	galaxyRNG->SetSeed(galaxySeed,16);
+
+	for (y=0;y<10;y++)
 	{
-		n++;
-		starName = L"Star ";
-		starName +=n;
-		GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(vector2ds(x,y));
-		knownStars.push_back(newSystem);
-		newSystem->SetName(starName);
+		coordinates.Y = y;
+		for (x=0;x<10;x++)
+		{
+			coordinates.X = x;
+			if (CheckStarPresence(coordinates)==1)
+			{
+				//Very basic star name generator
+				wchar_t tmp[255];
+				u8 char1,char2,char3;
+				u32 number;
+				char1= 65+(galaxyRNG->GetByteByOffset(20))%26;
+				char2 = 65+(galaxyRNG->GetByteByOffset(21))%26;
+				char3 = 65+(galaxyRNG->GetByteByOffset(22))%26;
+
+				number = galaxyRNG->GetByteByOffset(23)+galaxyRNG->GetByteByOffset(24)*256;
+				//char1 = 65;char2 = 66;char3 = 67;
+				//number = 0;
+				number = number%10000;
+				swprintf(tmp, 255, L"%c%c%c %04i", char1,char2,char3,number);
+
+				galaxyRNG->GetByteByOffset(100);
+
+				//starName = L"Star ";
+				//starName +=n;
+				GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(vector2ds(x,y));
+				knownStars.push_back(newSystem);
+				newSystem->SetName(text_string(tmp));
+			}
+		}
 	}
 	
 	//knownStars.
@@ -2948,6 +3028,20 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 	return;
 
 }
+
+u32 Galaxy::CheckStarPresence(vector2ds coordinates)
+{
+	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,coordinates.X,coordinates.Y);
+	if (galaxyRNG->GetByteByOffset(0)<0x30)
+		return 1;//star present
+	return 0;//no star
+}
+
+GalaxyStarSystem* Galaxy::GetStartStarSystem()
+{
+	return knownStars[0];
+}
+
 
 //#########################################################################
 //GalaxyStarSystem
@@ -3160,7 +3254,7 @@ void DeterminedRandomGenerator::SetSeedWithCoordinates(u8* newSeed, u32 seedLen,
 {
 	if ((seedLen+8)>seedLength)
 		seedLen = seedLength-8;
-	memset(hashBuffer,0,seedLength);
+	memset(hashBuffer,0,bufferLength);
 	if (seedLen>0)
 		memcpy(hashBuffer,newSeed,seedLen);
 	memcpy(hashBuffer+seedLength-8,&x,4);
@@ -3212,6 +3306,8 @@ void DeterminedRandomGenerator::GenerateBytes(u8* destination, u32 len)
 	}
 }
 
+
+//check new offset, if it is outside current block - generate new block
 void DeterminedRandomGenerator::GenerateBlock()
 {
 	u32 newOffset = offset & 0xFFFFFFF0;
@@ -3225,7 +3321,83 @@ void DeterminedRandomGenerator::GenerateBlock()
 	}
 }
 
+//#########################################################################
+//UndeterminedRandomGenerator
 
+UndeterminedRandomGenerator::UndeterminedRandomGenerator()
+{
+	hasher = new SHA1();
+	offset = 0;
+	memset(hashBuffer,0,bufferLength);//clean, as compiler would not like leaving buffer with untouched memory content
+	GenerateBlock();
+}
+
+void UndeterminedRandomGenerator::AddSeed(u8* newSeed, u32 seedLen)
+{
+	u32 bufferStep = bufferLength - blockLength;
+	u32 copyLen;
+	for(u32 i=0;i<seedLen;i+=bufferStep)
+	{
+		copyLen = seedLen-i;
+		if (copyLen>bufferStep) 
+			copyLen=bufferStep;
+		memcpy(hashBuffer+blockLength,newSeed+i,copyLen);
+		RehashBlock();
+	}
+}
+
+//return 1 random byte
+u8 UndeterminedRandomGenerator::GenerateByte()
+{
+	offset++;
+	if (offset>=blockLength)
+		GenerateBlock();
+	return hashBuffer[offset];
+}
+
+//write <len> bytes 
+void UndeterminedRandomGenerator::GenerateBytes(u8* destination, u32 len)
+{
+}
+
+void UndeterminedRandomGenerator::GenerateBlock()
+{
+	u32 pos;
+	u64 systemTime;
+	u32 systemRandom = rand();
+	u64 memoryAddress;
+
+	// random sources:
+	//  0-15  prev random [16]
+	// 16-23  counter [8]
+	// 24-31  time [8]
+	// 32-35  systemRandom [4]
+	// 36-43  address of time variable [8]
+
+	counter++;
+	pos = blockLength;
+	memcpy(hashBuffer+pos,&counter,8);pos+=8;
+
+	systemTime = (u64)time(0);
+	memcpy(hashBuffer+pos,&systemTime,8);pos+=8;
+
+	memcpy(hashBuffer+pos,&systemRandom,4);pos+=4;
+
+	memoryAddress = (u64)&systemTime;
+	memcpy(hashBuffer+pos,&memoryAddress,8);pos+=8;
+
+	RehashBlock();
+
+}
+
+void UndeterminedRandomGenerator::RehashBlock()
+{
+	//hash all
+	hasher->Reset();
+	hasher->ProcessArrayFinal(hashBuffer,bufferLength);
+	hasher->WriteHash(hashBuffer);
+	offset = 0;
+}
 
 //#########################################################################
 //main()
@@ -3233,6 +3405,7 @@ void DeterminedRandomGenerator::GenerateBlock()
 int main(int ArgumentCount, char **Arguments) {
 
 	DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();
+	//UndeterminedRandomGenerator* pRNG = new UndeterminedRandomGenerator();
 	u8 test[32];
 
 	for (u32 i=0;i<32;i++)
@@ -3250,6 +3423,7 @@ int main(int ArgumentCount, char **Arguments) {
 	printf("seed (1,2) from 3 v2:");
 	for (u32 i=0;i<100;i++)
 		printf("%02X",pRNG->GetByteByOffset(i+3));
+		//printf("%02X",pRNG->GenerateByte());
 	printf("\r\n");
 
 
