@@ -97,6 +97,8 @@ coding demo1:
 110903: ADD: UndeterminedRandomGenerator
 110903: ADD: galaxySeed
 110903: ADD: more stars + name generator
+110904: ADD: generation of star systems
+110904: ADD: debug jump - press J to cycle thru all star systems
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -121,10 +123,13 @@ DONE:
 + entering star system must be checked during FTL fly, not on exit
 + FTL limit from constant to PlayerShip
 + playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
++ RNGs and seeds
 
 TODO
-- RNGs and seeds
--1 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
+-0 generation of planets in star system 
+-1 generation of double and multiple stars
+
+-2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
 
 
 - messages on main screen
@@ -132,7 +137,7 @@ TODO
 - display more info about orbit - shape, min/max distance (with fall estimation), period
 - galaxy map
 
--2SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
+-3SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 
 - moving of some background at FTL
 - thrust flame as sub-object to SpaceObject
@@ -175,6 +180,7 @@ O - orbiting (around object which produce max graviry force at player's ship)
 Up/Down - zoom
 Tab - switch to map
 F - jump to FTL (FTL works only if gravity < -5.75 dgr)
+J - jump to some system (for debug only)
 X - dump galaxy coordinates into log
 
 CONTROL on map:
@@ -510,7 +516,7 @@ class ResourceManager
 		video::IVideoDriver* GetVideoDriver() {return videoDriver;}
 		MyEventReceiver* GetEventReceiver() {return eventReceiver;}
 
-		void MakeSimpleSystem();
+		//void MakeSimpleSystem();
 		void MakeBackground();
 		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
 		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
@@ -752,7 +758,10 @@ public:
 
 	GalaxyStarSystem* GetStartStarSystem();
 
+	GalaxyStarSystem* DebugJump();
+
 private:
+	u32 debugStarCounter;
 	u8 galaxySeed[16];//seed of whole galaxy
 	DeterminedRandomGenerator* galaxyRNG;
 	core::array<GalaxyStarSystem*> knownStars;//TODO: in future replace array by seed-based generator
@@ -762,13 +771,22 @@ private:
 class GalaxyStarSystem
 {
 public:
+
+	GalaxyStarSystem(vector2ds quadrantCoordinates);
+
 	vector2d GetGalaxyCoordinates() {return galaxyCoordinates;}
 	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 	text_string GetName() {return name;}
 
-	static GalaxyStarSystem* RandomStar(vector2ds quadrantCoordinates);
+	void SetSeed(u8* seedData, u32 seedLen);
+
+	//static GalaxyStarSystem* RandomStar(vector2ds quadrantCoordinates);
+	void GenerateStar();
 	void SetName(text_string newName) {name = newName;}
+
+	void GenerateStarSystem(ResourceManager* resourceManager);
 private:
+	DeterminedRandomGenerator* starRNG;
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
 	text_string name;
@@ -1666,6 +1684,7 @@ void ResourceManager::MakeBackground()
 	//smgr->addBillboardSceneNode(0,core::dimension2d<f32>(100,100));
 }
 
+/*
 void ResourceManager::MakeSimpleSystem()
 {
 	f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
@@ -1674,33 +1693,6 @@ void ResourceManager::MakeSimpleSystem()
 	f64 planetMass[11]={330000.0,0.06,0.82,1.00,0.11,317.8,95.2,14.6,17.2,0.0022};
 	text_string planetNames[11]={L"Sun",L"Mercury",L"Venus",L"Earth",L"Mars",L"Jupiter",L"Saturn",L"Uranus",L"Neptune",L"Pluto"};
 	//f32 planetMass[11]={0.0f,0.06f,0.82f,1.00f,0.11f,317.8f,95.2f,14.6f,17.2f,0.0022f};
-
-
-	/*
-	MakeStar();
-
-	SpaceObject* sun = MakeStar(2);
-	sun->SetOrbitalParams(0,70,100,180);
-	//sun = MakeStar(2);
-	//sun->SetOrbitalParams(0,70,100,90);
-	//sun = MakeStar(2);
-	//sun->SetOrbitalParams(0,70,100,270);
-
-	SpaceObject* planetOne = MakePlanet(10);
-	planetOne->SetOrbitalParams(0,200,300,10);
-
-	SpaceObject* planetTwo = MakePlanet(2,20);
-	planetTwo->SetOrbitalParams(0,20,50,40);
-
-	planetTwo = MakePlanet(2,20);
-	planetTwo->SetOrbitalParams(planetOne,20,20,15);
-
-	planetTwo = MakePlanet(3);
-	planetTwo->SetOrbitalParams(0,35,40,75);
-
-	planetTwo = MakePlanet(3);
-	planetTwo->SetOrbitalParams(0,55,80,220);*/
-
 
 	//Solar system
 	//Everything not to scale
@@ -1754,7 +1746,7 @@ void ResourceManager::MakeSimpleSystem()
 	//someShip->SetGravity(false,true);
 	//someShip->SetRotationSpeed(20.f);
 	//someShip->rotationSpeed = 20.f;
-}
+}*/
 
 SpaceObject* ResourceManager::MakeStar(f64 radius, s32 polygons)
 {
@@ -2184,6 +2176,12 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			DisplayMessage(L"Gravity is too high to jump to FTL");
 		}
 	}
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_J))
+	{
+		vector3d tempPos = playerShip->GetPosition();
+		gameRoot->GoStarSystem(gameRoot->GetGalaxy()->DebugJump());
+		playerShip->SetPosition(tempPos);
+	}
 
 
 	//playerShip->thrustPower = thrust*MOVEMENT_SPEED*5.f;
@@ -2340,6 +2338,9 @@ void MapSpaceView::AddObject(SpaceObject* spaceObject)
 void MapSpaceView::AddStarMarker(GalaxyStarSystem* starSystem)
 {
 	vector2d position = (starSystem->GetGalaxyCoordinates() - gamePhysics->GetGalaxyCoordinatesOfCenter())*LIGHTYEAR;
+
+	if (position.getLengthSQ()<0.01)
+		return;//skip same star
 
 	//TODO: add non-object marker
 	SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
@@ -2598,7 +2599,6 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	gamePhysics->AddObject((SpaceObject*)playerShip);
 	playerShip->SetGravity(false,true);
 	playerShip->SetMotionType(SpaceObject::MOTION_NAVIGATION);
-	playerShip->SetPosition(vector3d(0,1300,0));
 	playerShip->SetRotation(90);
 	playerShip->SetSpeed(vector3d(-320.28,0,0));
 	playerShip->SetMaxThrust(100000,150);
@@ -2611,12 +2611,18 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	//wholeGalaxy->AddNearStarSystems(gamePhysics);
 
-	gamePhysics->GoStarSystem();
-
 	RealSpace->Init();
+	gamePhysics->GoStarSystem();
+	GoStarSystem(currentStarSystem);
 
+	playerShip->SetPosition(vector3d(0,1300,0));
+
+	/*
+	gamePhysics->GoStarSystem();
+	RealSpace->Init();
 	resourceManager->MakeBackground();
 	resourceManager->MakeSimpleSystem();
+	*/
 
 
 	//activeView = RealSpace;
@@ -2793,15 +2799,16 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	vector2d playerRelativeCoordinates;
 	vector2d nearStarSystemGalaxyCoordinates;
 
+	gamePhysics->GoStarSystem();
+
 	RealSpace->Clean();
 	RealSpace->Init();
-
-	gamePhysics->GoStarSystem();
 
 	resourceManager->SetSceneManager(smgr);
 	resourceManager->MakeBackground();
 
-	resourceManager->MakeSimpleSystem();
+	//resourceManager->MakeSimpleSystem();
+	toStarSystem->GenerateStarSystem(resourceManager);
 
 	currentStarSystem = toStarSystem;
 
@@ -2920,9 +2927,11 @@ void PlayerShip::UpdateGalaxyCoordinates()
 void Galaxy::Init()
 {
 	s32 x,y;
-	s32 n = 0;
+	//s32 n = 0;
 	text_string starName;
 	vector2ds coordinates;
+
+	debugStarCounter = 0;
 
 	//TEMP
 	galaxySeed[0]=0x10;
@@ -2947,27 +2956,18 @@ void Galaxy::Init()
 			coordinates.X = x;
 			if (CheckStarPresence(coordinates)==1)
 			{
-				//Very basic star name generator
-				wchar_t tmp[255];
-				u8 char1,char2,char3;
-				u32 number;
-				char1= 65+(galaxyRNG->GetByteByOffset(20))%26;
-				char2 = 65+(galaxyRNG->GetByteByOffset(21))%26;
-				char3 = 65+(galaxyRNG->GetByteByOffset(22))%26;
-
-				number = galaxyRNG->GetByteByOffset(23)+galaxyRNG->GetByteByOffset(24)*256;
-				//char1 = 65;char2 = 66;char3 = 67;
-				//number = 0;
-				number = number%10000;
-				swprintf(tmp, 255, L"%c%c%c %04i", char1,char2,char3,number);
-
-				galaxyRNG->GetByteByOffset(100);
+				u8 starSeed[16];
+				galaxyRNG->SetOffset(10);
+				galaxyRNG->GenerateBytes(starSeed,16);
 
 				//starName = L"Star ";
 				//starName +=n;
-				GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(vector2ds(x,y));
+				//GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(coordinates);
+				GalaxyStarSystem* newSystem = new GalaxyStarSystem(coordinates);
+				newSystem->SetSeed(starSeed,16);
+				newSystem->GenerateStar();
 				knownStars.push_back(newSystem);
-				newSystem->SetName(text_string(tmp));
+				//newSystem->SetName(text_string(tmp));
 			}
 		}
 	}
@@ -3042,19 +3042,130 @@ GalaxyStarSystem* Galaxy::GetStartStarSystem()
 	return knownStars[0];
 }
 
+GalaxyStarSystem* Galaxy::DebugJump()
+{
+	debugStarCounter++;
+	if (debugStarCounter>=knownStars.size())
+		debugStarCounter=0;
+	return knownStars[debugStarCounter];
+}
+
 
 //#########################################################################
 //GalaxyStarSystem
 
-GalaxyStarSystem* GalaxyStarSystem::RandomStar(vector2ds quadrantCoordinates)
+GalaxyStarSystem::GalaxyStarSystem(vector2ds quadrantCoordinates)
 {
-	GalaxyStarSystem* newSystem = new GalaxyStarSystem();
-	newSystem->name = "Star";
-	newSystem->galaxyQuadrant = quadrantCoordinates;
-	newSystem->galaxyCoordinates.X = quadrantCoordinates.X+0.5;
-	newSystem->galaxyCoordinates.Y = quadrantCoordinates.Y+0.5;
-	
-	return newSystem;
+	galaxyQuadrant = quadrantCoordinates;
+	starRNG = new DeterminedRandomGenerator();
+}
+
+void GalaxyStarSystem::GenerateStar()
+{
+	//name = "Star";
+
+	//Very basic star name generator
+	wchar_t tmp[255];
+
+	u8 char1,char2,char3;
+	u32 number;
+	u32 x,y;
+
+	char1= 65+(starRNG->GetByteByOffset(0))%26;
+	char2 = 65+(starRNG->GetByteByOffset(1))%26;
+	char3 = 65+(starRNG->GetByteByOffset(2))%26;
+
+	number = starRNG->GetByteByOffset(3)+starRNG->GetByteByOffset(4)*256;
+	number = number%10000;
+	swprintf(tmp, 255, L"%c%c%c %04i", char1,char2,char3,number);
+
+	name = tmp;
+
+	x = starRNG->GetByteByOffset(20)+starRNG->GetByteByOffset(21)*256;
+	y = starRNG->GetByteByOffset(22)+starRNG->GetByteByOffset(23)*256;
+
+	galaxyCoordinates.X = galaxyQuadrant.X+x/65536.0;
+	galaxyCoordinates.Y = galaxyQuadrant.Y+y/65536.0;
+}
+
+void GalaxyStarSystem::SetSeed(u8* seedData, u32 seedLen)
+{
+	starRNG->SetSeed(seedData,seedLen);
+}
+
+void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
+{
+	f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
+	f64 planetOrbits[11]={0.0,0.39,0.72,1.00,1.52,5.20,9.54,19.22,30.06,45.0};
+	f64 planetPeriods[11]={0.0,0.24,0.62,1.00,1.88,11.86, 29.46,84.01,164.8,248.09};
+	f64 planetMass[11]={330000.0,0.06,0.82,1.00,0.11,317.8,95.2,14.6,17.2,0.0022};
+	text_string planetNames[11]={L"Sun",L"Mercury",L"Venus",L"Earth",L"Mars",L"Jupiter",L"Saturn",L"Uranus",L"Neptune",L"Pluto"};
+	//f32 planetMass[11]={0.0f,0.06f,0.82f,1.00f,0.11f,317.8f,95.2f,14.6f,17.2f,0.0022f};
+
+
+	//Solar system
+	//Everything not to scale
+	SpaceObject* planet;
+
+	SpaceObject* star;
+
+	//generating single star
+	f64 size,mass;
+	u32 number;
+
+	starRNG->SetOffset(1000);
+
+	//Star size: from 0.008 to 2100 solar radii, 2.8 - 1531500 units
+	//Star mass: 0.014 - 265 solar masses, 27598 - 522391320 units
+	number = starRNG->GenerateByte();
+	number += 256*starRNG->GenerateByte();
+	//Very-very dumb star generator
+	size = exp(number*0.000201+1);
+	mass = size*500.0;
+
+	//size = 190*6.37;
+	//mass = 330000.0*5.9736;
+	star = resourceManager->MakeStar(size);
+	star->SetMass(mass);//in 10^24 kg
+	star->SetGravity(true,false);
+	star->SetName(name);//name of star system
+
+
+	//planet = MakeStar(planetSizes[0]*.01f);//sun is 10 times larger, compared to orbits
+	//planet->SetMass(planetMass[0]);
+	//planet->SetGravity(true,false);
+
+	for (s32 i=1;i<10;i++)
+	{
+		//planetSizes - in 6370 km
+		//planetOrbits - in 150M km
+		//planetPeriods - in years
+		//planetMass - in 5.9736*10^24
+		if (i==0)
+			planet = resourceManager->MakeStar(planetSizes[i]*6.37);
+		else
+		{
+			planet = resourceManager->MakePlanet(planetSizes[i]*6.37);//1000km in 1 unit
+			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*i*20.0);//1000 seconds in 1
+		}
+		//if (i==0)
+		{
+			planet->SetName(planetNames[i]);
+			planet->SetMass(planetMass[i]*5.9736);//in 10^24 kg
+			planet->SetGravity(true,false);
+		}
+		//planet->SetOrbitalParams(0,planetOrbits[i]*23.50f,0,0);
+
+		if (i==3)
+		{
+			SpaceObject* moon;
+			moon = resourceManager->MakePlanet(1.74);
+			moon->SetOrbitalParams(planet,384.0,2358.72,120.0);
+			moon->SetMass(.0123*5.9736);
+			moon->SetGravity(true,false);
+			moon->SetName(L"Moon");
+		}
+	}
 }
 
 //#########################################################################
