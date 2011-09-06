@@ -97,8 +97,9 @@ coding demo1:
 110903: ADD: UndeterminedRandomGenerator
 110903: ADD: galaxySeed
 110903: ADD: more stars + name generator
-110904: ADD: generation of star systems
+110904: ADD: generation of star systems (dumb)
 110904: ADD: debug jump - press J to cycle thru all star systems
+110906: ADD: generation of planets (dumb)
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -126,8 +127,9 @@ DONE:
 + RNGs and seeds
 
 TODO
--0 generation of planets in star system 
+-0 generation of moon in star system 
 -1 generation of double and multiple stars
+-2 more physics in star systems - HR and so on
 
 -2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
 
@@ -1247,10 +1249,11 @@ void SpaceObject::UpdatePhysics(f64 time)
 			f64 Phase = orbitalEpochPhase;
 			if (orbitalPeriod!=0)
 			{
-				Phase+=360.0*physics->globalTime/orbitalPeriod;
+				//Phase+=360.0*physics->globalTime/orbitalPeriod;
+				Phase+=TWO_PI*physics->globalTime/orbitalPeriod;
 			}
-			position.X = cos(Phase*CoeffDegreesToRadians)*orbitalRadius;
-			position.Y = sin(Phase*CoeffDegreesToRadians)*orbitalRadius;
+			position.X = cos(Phase)*orbitalRadius;
+			position.Y = sin(Phase)*orbitalRadius;
 			position.Z = 0;
 			if (orbitingObject!=0)
 				position+=orbitingObject->position;
@@ -1290,9 +1293,10 @@ vector3d SpaceObject::GetSpeed()
 			{
 				f64 Phase = orbitalEpochPhase;
 				f64 speedValue = orbitalRadius*TWO_PI/orbitalPeriod;
-				Phase+=360.0*physics->globalTime/orbitalPeriod;
-				speed.X = -sin(Phase*CoeffDegreesToRadians)*speedValue;
-				speed.Y = cos(Phase*CoeffDegreesToRadians)*speedValue;
+				//Phase+=360.0*physics->globalTime/orbitalPeriod;
+				Phase+=TWO_PI*physics->globalTime/orbitalPeriod;
+				speed.X = -sin(Phase)*speedValue;
+				speed.Y = cos(Phase)*speedValue;
 				speed.Z = 0;
 				if (orbitingObject!=0)
 					speed+=orbitingObject->GetSpeed();
@@ -3098,7 +3102,7 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
 	f64 planetOrbits[11]={0.0,0.39,0.72,1.00,1.52,5.20,9.54,19.22,30.06,45.0};
 	f64 planetPeriods[11]={0.0,0.24,0.62,1.00,1.88,11.86, 29.46,84.01,164.8,248.09};
-	f64 planetMass[11]={330000.0,0.06,0.82,1.00,0.11,317.8,95.2,14.6,17.2,0.0022};
+	//f64 planetMass[11]={330000.0,0.06,0.82,1.00,0.11,317.8,95.2,14.6,17.2,0.0022};
 	text_string planetNames[11]={L"Sun",L"Mercury",L"Venus",L"Earth",L"Mars",L"Jupiter",L"Saturn",L"Uranus",L"Neptune",L"Pluto"};
 	//f32 planetMass[11]={0.0f,0.06f,0.82f,1.00f,0.11f,317.8f,95.2f,14.6f,17.2f,0.0022f};
 
@@ -3110,8 +3114,11 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	SpaceObject* star;
 
 	//generating single star
-	f64 size,mass;
+	f64 starSize,starMass;
+	f64 nextOrbit;
+	f64 planetMass, planetRadius, planetOrbitPeriod,planetOrbitPhase;
 	u32 number;
+	u32 i;
 
 	starRNG->SetOffset(1000);
 
@@ -3120,21 +3127,89 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	number = starRNG->GenerateByte();
 	number += 256*starRNG->GenerateByte();
 	//Very-very dumb star generator
-	size = exp(number*0.000201+1);
-	mass = size*500.0;
+	starSize = exp(number*0.000201+1);
+	starMass = starSize*500.0;
 
+	//TODO: Get Main Sequence from Hertzsprung–Russell diagrams
+	//calc luminousity distribution
+	//calc mass distribution
+	//make mass->luminousity interpolation formula
+	//make mass->radius interpolation formula
+	//generate mass, calc radius via it
+
+	//SUN:
 	//size = 190*6.37;
 	//mass = 330000.0*5.9736;
-	star = resourceManager->MakeStar(size);
-	star->SetMass(mass);//in 10^24 kg
+	star = resourceManager->MakeStar(starSize);
+	star->SetMass(starMass);//in 10^24 kg
 	star->SetGravity(true,false);
 	star->SetName(name);//name of star system
+
+	number = starRNG->GenerateByte();
+	
+	//1st planet orbit
+	nextOrbit = starSize * (30.0+number*0.3);//30 - 107
+
+
+	//planet generation cycle
+	for (i = 1;;i++) //exit from the middle
+	{
+		number = starRNG->GenerateByte();
+
+		//check breaking
+		if (i==1)
+		{
+			if (number>=0xF0)
+				break;//no planets with probab 6.25%
+		}
+		else if (i<5)
+		{
+			if (number>=0xE0)
+				break;
+		}
+		else 
+		{
+			if (number>=0x80)
+				break;//all next planets with probability 50% from previous one
+		}
+
+
+		//periods is stricly defined by orbit and star mass
+		//p = 2*pi * a*(a/G*M)^1/2
+		planetOrbitPeriod = TWO_PI * nextOrbit * sqrt(nextOrbit/(starMass*G_CONSTANT));
+
+
+		//OrbitPhase = epoch - totally random (unless we set up orbit resonance and so on)
+		number = starRNG->GenerateByte();
+		planetOrbitPhase = number * TWO_PI/256.0;
+
+		//0.2 - 15 of Earth
+		planetRadius = 1.0;
+
+		//0.002 - 15 of Earhh
+		planetMass = 1.0;
+
+		planet = resourceManager->MakePlanet(planetRadius);
+		planet->SetOrbitalParams(star,nextOrbit,planetOrbitPeriod,planetOrbitPhase);//1000 seconds in 1
+
+		{
+			wchar_t tmp[255];
+			swprintf(tmp, 255, L"Planet %i", i);
+			planet->SetName(tmp);
+		}
+		planet->SetMass(planetMass);//in 10^24 kg
+		planet->SetGravity(true,false);
+
+
+		//to next orbit
+		nextOrbit = nextOrbit * (1.3+number*0.0027);//1.3 - 1.99
+	}
 
 
 	//planet = MakeStar(planetSizes[0]*.01f);//sun is 10 times larger, compared to orbits
 	//planet->SetMass(planetMass[0]);
 	//planet->SetGravity(true,false);
-
+/*
 	for (s32 i=1;i<10;i++)
 	{
 		//planetSizes - in 6370 km
@@ -3165,7 +3240,7 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 			moon->SetGravity(true,false);
 			moon->SetName(L"Moon");
 		}
-	}
+	}*/
 }
 
 //#########################################################################
