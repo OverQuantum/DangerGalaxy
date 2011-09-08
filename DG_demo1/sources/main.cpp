@@ -97,9 +97,11 @@ coding demo1:
 110903: ADD: UndeterminedRandomGenerator
 110903: ADD: galaxySeed
 110903: ADD: more stars + name generator
-110904: ADD: generation of star systems (dumb)
+110904: ADD: generation of star systems (very dumb)
 110904: ADD: debug jump - press J to cycle thru all star systems
 110906: ADD: generation of planets (dumb)
+110908: CHG: generation of planets improved a little
+110908: ADD: generation of moons (dumb)
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -127,7 +129,6 @@ DONE:
 + RNGs and seeds
 
 TODO
--0 generation of moon in star system 
 -1 generation of double and multiple stars
 -2 more physics in star systems - HR and so on
 
@@ -3099,26 +3100,28 @@ void GalaxyStarSystem::SetSeed(u8* seedData, u32 seedLen)
 
 void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 {
-	f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
-	f64 planetOrbits[11]={0.0,0.39,0.72,1.00,1.52,5.20,9.54,19.22,30.06,45.0};
-	f64 planetPeriods[11]={0.0,0.24,0.62,1.00,1.88,11.86, 29.46,84.01,164.8,248.09};
+	//f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
+	//f64 planetOrbits[11]={0.0,0.39,0.72,1.00,1.52,5.20,9.54,19.22,30.06,45.0};
+	//f64 planetPeriods[11]={0.0,0.24,0.62,1.00,1.88,11.86, 29.46,84.01,164.8,248.09};
 	//f64 planetMass[11]={330000.0,0.06,0.82,1.00,0.11,317.8,95.2,14.6,17.2,0.0022};
-	text_string planetNames[11]={L"Sun",L"Mercury",L"Venus",L"Earth",L"Mars",L"Jupiter",L"Saturn",L"Uranus",L"Neptune",L"Pluto"};
+	//text_string planetNames[11]={L"Sun",L"Mercury",L"Venus",L"Earth",L"Mars",L"Jupiter",L"Saturn",L"Uranus",L"Neptune",L"Pluto"};
 	//f32 planetMass[11]={0.0f,0.06f,0.82f,1.00f,0.11f,317.8f,95.2f,14.6f,17.2f,0.0022f};
 
 
 	//Solar system
 	//Everything not to scale
-	SpaceObject* planet;
-
-	SpaceObject* star;
+	SpaceObject* star, *planet, *moon;
 
 	//generating single star
 	f64 starSize,starMass;
 	f64 nextOrbit;
+	f64 planetOrbit;
 	f64 planetMass, planetRadius, planetOrbitPeriod,planetOrbitPhase;
+	f64 moonOrbitLimit;
+	f64 moonMass, moonRadius, moonOrbitRadius, moonOrbitPeriod, moonOrbitPhase;
 	u32 number;
-	u32 i;
+	u32 moonLimit;
+	u32 i,j;
 
 	starRNG->SetOffset(1000);
 
@@ -3148,7 +3151,12 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	number = starRNG->GenerateByte();
 	
 	//1st planet orbit
-	nextOrbit = starSize * (30.0+number*0.3);//30 - 107
+	//nextOrbit = starSize * (30.0+number*0.3);//30 - 107
+
+	planetOrbit = 60000 + starSize * 1.3;
+	planetOrbit = planetOrbit * (0.8+number*0.0015);//k = 0.8 - 1.2
+
+	moonOrbitLimit = planetOrbit - starSize;
 
 
 	//planet generation cycle
@@ -3176,21 +3184,26 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 
 		//periods is stricly defined by orbit and star mass
 		//p = 2*pi * a*(a/G*M)^1/2
-		planetOrbitPeriod = TWO_PI * nextOrbit * sqrt(nextOrbit/(starMass*G_CONSTANT));
+		planetOrbitPeriod = TWO_PI * planetOrbit * sqrt(planetOrbit/(starMass*G_CONSTANT));
 
 
 		//OrbitPhase = epoch - totally random (unless we set up orbit resonance and so on)
 		number = starRNG->GenerateByte();
 		planetOrbitPhase = number * TWO_PI/256.0;
 
-		//0.2 - 15 of Earth
-		planetRadius = 1.0;
+		//0.2 R of Earth - 1.8 R of Jupiter: 1.2 - 126 Mm
+		number = starRNG->GenerateByte();
+		planetRadius = 1.2 + number*0.49;
 
-		//0.002 - 15 of Earhh
-		planetMass = 1.0;
+		moonLimit = number;//the larger the value - more moons
+
+		//0.02 - ~1000 of Earth, 0.12 - 5973 massunits
+		planetMass = 0.12 + number*23.43;//proportional to radius
+
+		//http://en.wikipedia.org/wiki/Extrasolar_planet#Mass_distribution
 
 		planet = resourceManager->MakePlanet(planetRadius);
-		planet->SetOrbitalParams(star,nextOrbit,planetOrbitPeriod,planetOrbitPhase);//1000 seconds in 1
+		planet->SetOrbitalParams(star,planetOrbit,planetOrbitPeriod,planetOrbitPhase);//1000 seconds in 1
 
 		{
 			wchar_t tmp[255];
@@ -3200,9 +3213,53 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 		planet->SetMass(planetMass);//in 10^24 kg
 		planet->SetGravity(true,false);
 
+		moonOrbitRadius = 5000 + 3*planetRadius;
+
+		for (j=0;;j++)
+		{
+			if (moonOrbitRadius>moonOrbitLimit)
+				break;
+
+			number = starRNG->GenerateByte();
+
+			if (number>moonLimit)
+				break;//no (more) moon
+
+			number = starRNG->GenerateByte();
+			moonMass = (number+1)*0.000275;//0- 0.07 massunits
+
+			moonRadius = (number+1)*0.008;//- 2 Mm
+			
+			moonOrbitPeriod = TWO_PI * moonOrbitRadius * sqrt(moonOrbitRadius/(planetMass*G_CONSTANT));
+
+			//OrbitPhase = epoch - totally random (unless we set up orbit resonance and so on)
+			number = starRNG->GenerateByte();
+			moonOrbitPhase = number * TWO_PI/256.0;
+
+			moon = resourceManager->MakePlanet(moonRadius);
+			moon->SetOrbitalParams(planet,moonOrbitRadius,moonOrbitPeriod,moonOrbitPhase);
+			moon->SetMass(.0123*5.9736);
+			moon->SetGravity(true,false);
+			{
+				wchar_t tmp[255];
+				swprintf(tmp, 255, L"Moon %i%c", i,97+j);
+				moon->SetName(tmp);
+			}
+
+			number = starRNG->GenerateByte();
+			moonOrbitRadius = moonOrbitRadius + 1000 + number*4;
+			number = starRNG->GenerateByte();
+			moonOrbitRadius = moonOrbitRadius * (1.1+number*0.001);
+
+			
+		}
 
 		//to next orbit
-		nextOrbit = nextOrbit * (1.3+number*0.0027);//1.3 - 1.99
+		number = starRNG->GenerateByte();
+		nextOrbit = planetOrbit * (1.3+number*0.0027);//1.3 - 1.99
+
+		moonOrbitLimit = 0.5*(nextOrbit - planetOrbit);//moon orbit not more then planet inter-orbit span
+		planetOrbit = nextOrbit;
 	}
 
 
