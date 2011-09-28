@@ -104,6 +104,12 @@ coding demo1:
 110908: ADD: generation of moons (dumb)
 110911: ADD: binary stars (dumb)
 110911: ADD: dump basic info about star system
+110912: ADD: multiple stars (dumb, many checks are skipped)
+110915: ADD: multiple stars a bit more physical (no planets yet)
+110915: ADD: time speed control, 1-100k (F1-F6)
+110916: ADD: planets around multiple stars
+
+110928: ADD: planet mass limit (depends on host star mass)
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -187,6 +193,7 @@ Tab - switch to map
 F - jump to FTL (FTL works only if gravity < -5.75 dgr)
 J - jump to some system (for debug only)
 X - dump galaxy coordinates into log
+F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
 
 CONTROL on map:
 Up/Down - zoom
@@ -291,6 +298,7 @@ class InfoFTL;
 class SHA1;
 class DeterminedRandomGenerator;
 class UndeterminedRandomGenerator;
+class StarComponent;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -479,6 +487,7 @@ class GamePhysics {
 		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
 		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
 		void SetPlayerShip(PlayerShip* newPlayerShip) {playerShip = newPlayerShip;}
+		void SetTimeSpeed(f64 newSpeed) {timeSpeed = newSpeed;}
 
 		void Update(f64 time);
 		void UpdateNodes(SpaceObject* centerSceneObject);
@@ -504,6 +513,7 @@ class GamePhysics {
 	private:
 		bool isInterstellar;//Nothing except ship
 		f64 maxGravityCheckRadiusSQ; //if object is farther from this radius, then we could skip checking of gravity for FTL, radius squared as it is much easier to check this way
+		f64 timeSpeed;//speed of time going, 1.0 for normal, 100 for faster
 
 		PlayerShip* playerShip;
 		core::array<SpaceObject*> listObjects;
@@ -791,7 +801,14 @@ public:
 	void SetName(text_string newName) {name = newName;}
 
 	void GenerateStarSystem(ResourceManager* resourceManager);
+
+	void GenerateComponent(ResourceManager* resourceManager, f64 mass, f64 sizeLimit, SpaceObject** rootObject);
+
+	void GenerateComponent2(StarComponent* component);
+	SpaceObject* FinalizeComponent(ResourceManager* resourceManager, StarComponent* component);
 private:
+	u32 componentIndex;//for naming stars in systems
+	u32 planetIndex;//for numbering planets
 	DeterminedRandomGenerator* starRNG;
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
@@ -889,6 +906,23 @@ private:
 	void RehashBlock();
 };
 
+//Holds info on star or composite component of star system
+class StarComponent
+{
+public:
+	u32 type;//0 - composite, 1 - main-sequence star, 2 - ...
+	f64 mass;//mass, in units
+	f64 radius;//physical radius of object, in units,  for composite its radius of components + mutual distance
+	f64 luminosity;//luminosity of object, in Solar's, N/A for composite
+	f64 innerOrbitLimit;//inner limit for orbiting objects
+	f64 outerOrbitLimit;//outer limit for orbiting objects
+	//text_string spectralClass;
+	f64 colorIndexBV;//  en.wikipedia.org/wiki/B-V_color,  N/A for composite
+	f64 subComponentsOrbit; //distance between subcomponents
+	StarComponent* subComponentA; //most massive, 0 if current is single object
+	StarComponent* subComponentB; //least massive, 0 if current is single object
+};
+
 /*
 class ResourceManager
 {
@@ -950,20 +984,24 @@ text_string GravityInfo::print()
 	text_string gravityInfo(L"");
 	if (maxGravityObject)
 	{
+		f64 percent = 0.0;
 		gravityInfo = L"Max gravity from: ";
 		gravityInfo += maxGravityObject->GetName();
+		gravityInfo += L" (";
+		gravityInfo += print_f64(log(maxGravity),L"%.02f");
+		gravityInfo += L" dgr ";//dgr: logarithm of gravity acceleration, 0 dgr = 1 m/s*s
 		if (secondMaxGravityObject)
 		{
-			f64 percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
-			gravityInfo += L" (";
-			gravityInfo += print_f64(log(maxGravity),L"%.02f");
-			gravityInfo += L" dgr ";//dgr: logarithm of gravity acceleration, 0 dgr = 1 m/s*s
+			percent = 100.0*maxGravity/(maxGravity+secondMaxGravity);
 			gravityInfo += print_f64(percent,L"%.02f");
-			gravityInfo += L"%)\r\n";
-			gravityInfo += L"Orbit: ";
-			gravityInfo += print_f64(orbitSemimajorAxis,L"%.02f");
-			gravityInfo += L", e: ";
-			gravityInfo += print_f64(orbitEccentricity,L"%f");
+		}
+		gravityInfo += L"%)\r\n";
+		gravityInfo += L"Orbit: ";
+		gravityInfo += print_f64(orbitSemimajorAxis,L"%.02f");
+		gravityInfo += L", e: ";
+		gravityInfo += print_f64(orbitEccentricity,L"%f");
+		if (secondMaxGravityObject)
+		{
 			gravityInfo += L"\r\nNext gravity from: ";
 			gravityInfo += secondMaxGravityObject->GetName();
 			gravityInfo += L" (";
@@ -1397,10 +1435,10 @@ void SpaceObject::BreakFTL(f64 remainingSpeed)
 void GamePhysics::Update(f64 time)
 {
 	u32 i;
-	globalTime += time;
+	globalTime += time*timeSpeed;
 	for (i=0;i<listObjects.size();i++)
 	{
-		listObjects[i]->UpdatePhysics(time);
+		listObjects[i]->UpdatePhysics(time*timeSpeed);
 		//SpaceObjectList[i]->UpdateSceneNode();
 	}
 }
@@ -2159,6 +2197,19 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_6))
 		playerThrust = 0.00001;
 
+	if(eventReceiver->IsKeyPressed(irr::KEY_F1))
+		gamePhysics->SetTimeSpeed(1.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F2))
+		gamePhysics->SetTimeSpeed(10.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F3))
+		gamePhysics->SetTimeSpeed(100.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F4))
+		gamePhysics->SetTimeSpeed(1000.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F5))
+		gamePhysics->SetTimeSpeed(10000.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F6))
+		gamePhysics->SetTimeSpeed(100000.0);
+
 	if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
 		playerShip->AutopilotBreak();
 	if (eventReceiver->IsKeyDown(irr::KEY_KEY_O))
@@ -2578,6 +2629,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	gamePhysics->globalTime = 0;
 	gamePhysics->SetGalaxyCoordinatesOfCenter(startGalaxyCoord);
 	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS*STAR_SYSTEM_RADIUS*LIGHTYEAR*LIGHTYEAR);
+	gamePhysics->SetTimeSpeed(1.0);
 
 	viewStack.clear();
 
@@ -3118,23 +3170,113 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	//It is estimated that 50–60% of binary stars are capable of supporting habitable terrestrial planets within stable orbital ranges.[68]
 	//Dust disk is formed: around binary is d<3 au, around each component if d>50 au
 
+	/*
+	Should be:
+	1. Generation of stars - by mass-division algo
+		a. Each step fills physical info about star/pair: mass, radius, luminousity, spectral class, inner and outer orbit possible
+		b. If stars can't fit into outer orbit limit, corresponding pair should be replaced by one star
+	2. Generation of planets and moons around stars and pairs
+		a. Orbit should lie between inner and outer orbit limits of star/pair
+		b. Sum of planet masses should be only small part of star/pair mass
 
-	//f64 planetSizes[11]={190.0,0.382,0.949,1.00,0.532,11.209,9.449,4.007,3.883,0.19};
-	//f64 planetOrbits[11]={0.0,0.39,0.72,1.00,1.52,5.20,9.54,19.22,30.06,45.0};
-	//f64 planetPeriods[11]={0.0,0.24,0.62,1.00,1.88,11.86, 29.46,84.01,164.8,248.09};
-	//f64 planetMass[11]={330000.0,0.06,0.82,1.00,0.11,317.8,95.2,14.6,17.2,0.0022};
-	//text_string planetNames[11]={L"Sun",L"Mercury",L"Venus",L"Earth",L"Mars",L"Jupiter",L"Saturn",L"Uranus",L"Neptune",L"Pluto"};
-	//f32 planetMass[11]={0.0f,0.06f,0.82f,1.00f,0.11f,317.8f,95.2f,14.6f,17.2f,0.0022f};
+
+	*/
+
+	StarComponent *rootComponent;
+
+	SpaceObject *root;
+	u32 number;
+	f64 starMass;
 
 
 	//Solar system
 	//Everything not to scale
+
+	//starRNG->SetOffset(1000);
+	starRNG->SetOffset(1001); //__DEBUG
+
+	//Star size: from 0.008 to 2100 solar radii, 2.8 - 1531500 units
+	//Star mass: 0.014 - 265 solar masses, 27598 - 522391320 units
+	number = starRNG->GenerateByte();
+	number += 256*starRNG->GenerateByte();
+	starMass = exp(number*0.000201+1)*500.0;
+
+	componentIndex = 0;
+	planetIndex = 0;
+
+	//GenerateComponent(resourceManager,starMass,LIGHTYEAR*0.05,&root);
+
+	//root->SetMotionType(SpaceObject::MOTION_NONE);
+
+
+	rootComponent = new StarComponent();
+
+	rootComponent->type = 0;//yet is composite
+	rootComponent->mass = starMass;
+	rootComponent->outerOrbitLimit = LIGHTYEAR*0.05;
+	rootComponent->innerOrbitLimit = 0;
+	rootComponent->radius = 0;
+	rootComponent->colorIndexBV = 0;
+	rootComponent->subComponentsOrbit = 0;
+	rootComponent->luminosity = 1;
+	rootComponent->subComponentA = 0;
+	rootComponent->subComponentB = 0;
+
+	GenerateComponent2(rootComponent);
+
+	root = FinalizeComponent(resourceManager,rootComponent);
+
+	root->SetMotionType(SpaceObject::MOTION_NONE);
+
+
+
+	//planet = MakeStar(planetSizes[0]*.01f);//sun is 10 times larger, compared to orbits
+	//planet->SetMass(planetMass[0]);
+	//planet->SetGravity(true,false);
+/*
+	for (s32 i=1;i<10;i++)
+	{
+		//planetSizes - in 6370 km
+		//planetOrbits - in 150M km
+		//planetPeriods - in years
+		//planetMass - in 5.9736*10^24
+		if (i==0)
+			planet = resourceManager->MakeStar(planetSizes[i]*6.37);
+		else
+		{
+			planet = resourceManager->MakePlanet(planetSizes[i]*6.37);//1000km in 1 unit
+			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*i*20.0);//1000 seconds in 1
+		}
+		//if (i==0)
+		{
+			planet->SetName(planetNames[i]);
+			planet->SetMass(planetMass[i]*5.9736);//in 10^24 kg
+			planet->SetGravity(true,false);
+		}
+		//planet->SetOrbitalParams(0,planetOrbits[i]*23.50f,0,0);
+
+		if (i==3)
+		{
+			SpaceObject* moon;
+			moon = resourceManager->MakePlanet(1.74);
+			moon->SetOrbitalParams(planet,384.0,2358.72,120.0);
+			moon->SetMass(.0123*5.9736);
+			moon->SetGravity(true,false);
+			moon->SetName(L"Moon");
+		}
+	}*/
+}
+
+//this generates single star with orbiting planets or call itself twice to generate binary component
+//sizelimit is upper limit of size for a system
+void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 mass, f64 sizeLimit, SpaceObject** rootObject)
+{
 	SpaceObject* star, *planet, *moon, *barycenter;
 
 	//generating single star
-	f64 starSize,starMass;
-	f64 star_A_size,star_A_mass;
-	f64 star_B_size,star_B_mass;
+	f64 starSize;
+	f64 star_A_mass, star_A_orbit;
+	f64 star_B_mass, star_B_orbit;
 	f64 starOrbit, starOrbitPeriod, starOrbitPhase;
 	f64 nextOrbit;
 	f64 planetOrbit;
@@ -3145,21 +3287,18 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	u32 moonLimit;
 	u32 i,j;
 
-	starRNG->SetOffset(1000);
-
 	//69% stars - single
 	number = starRNG->GenerateByte();
+
+	if (sizeLimit<140) //140 units is orbit in AM Canum Venaticorum binary system
+		number = 0;//too small limit to make binary subsystem
+
 	if (number<175)
 	{
 		//Single star
 
-		//Star size: from 0.008 to 2100 solar radii, 2.8 - 1531500 units
-		//Star mass: 0.014 - 265 solar masses, 27598 - 522391320 units
-		number = starRNG->GenerateByte();
-		number += 256*starRNG->GenerateByte();
 		//Very-very dumb star generator
-		starSize = exp(number*0.000201+1);
-		starMass = starSize*500.0;
+		starSize = mass*0.002;
 
 		//TODO: Get Main Sequence from Hertzsprung–Russell diagrams
 		//calc luminousity distribution
@@ -3172,12 +3311,18 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 		//size = 190*6.37;
 		//mass = 330000.0*5.9736;
 		star = resourceManager->MakeStar(starSize);
-		star->SetMass(starMass);//in 10^24 kg
+		star->SetMass(mass);//in 10^24 kg
 		star->SetGravity(true,false);
-		star->SetName(name);//name of star system
+		//star->SetName(name);//name of star system
+		{
+			wchar_t tmp[255];
+			swprintf(tmp, 255, L"%ws %wc", name.c_str(), 65+componentIndex);
+			star->SetName(tmp);
+		}
+		componentIndex++;
 
 		//DEBUG INFO
-		wprintf(L" Star %ws\r\n",name);
+		wprintf(L" Star %ws\r\n",star->GetName());
 
 
 		number = starRNG->GenerateByte();
@@ -3213,10 +3358,13 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 					break;//all next planets with probability 50% from previous one
 			}
 
+			if (planetOrbit>sizeLimit)
+				break;
+
 
 			//periods is stricly defined by orbit and star mass
 			//p = 2*pi * a*(a/G*M)^1/2
-			planetOrbitPeriod = TWO_PI * planetOrbit * sqrt(planetOrbit/(starMass*G_CONSTANT));
+			planetOrbitPeriod = TWO_PI * planetOrbit * sqrt(planetOrbit/(mass*G_CONSTANT));
 
 
 			//OrbitPhase = epoch - totally random (unless we set up orbit resonance and so on)
@@ -3296,25 +3444,31 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 			moonOrbitLimit = 0.5*(nextOrbit - planetOrbit);//moon orbit not more then planet inter-orbit span
 			planetOrbit = nextOrbit;
 		}
+		*rootObject = star;
 	}
 	else
 	{//Binary star
 		number = starRNG->GenerateByte();
-		number += 256*starRNG->GenerateByte();
-		starMass = exp(number*0.000201+1)*500.0;
-
-		number = starRNG->GenerateByte();
-		star_B_mass = starMass* (0.02 + number * 0.00188);//2% - 49.94% for B component;
-		star_A_mass = starMass - star_B_mass;
-		star_A_size = star_A_mass *0.002;
-		star_B_size = star_B_mass *0.002;
+		star_B_mass = mass* (0.02 + number * 0.00188);//2% - 49.94% for B component; A is most massive
+		star_A_mass = mass - star_B_mass;
+		//star_A_size = star_A_mass *0.002;
+		//star_B_size = star_B_mass *0.002;
 
 		number = starRNG->GenerateByte();
 		starOrbit = exp(0.02*number)*6000; //exp(0.02*255) =~ 164
 
-		starOrbit += (star_A_size+star_B_size)*2.0;
+		if (starOrbit> sizeLimit)
+		{
+			number = starRNG->GenerateByte();
+			starOrbit = sizeLimit*(0.1+number*0.003);
+		}
 
-		starOrbitPeriod = TWO_PI * starOrbit * sqrt(starOrbit/(starMass*G_CONSTANT));
+		//starOrbit += (star_A_size+star_B_size)*2.0;
+
+		starOrbitPeriod = TWO_PI * starOrbit * sqrt(starOrbit/(mass*G_CONSTANT));
+
+		star_A_orbit = starOrbit*star_B_mass/mass;
+		star_B_orbit = starOrbit*star_A_mass/mass;
 
 		//totally random
 		number = starRNG->GenerateByte();
@@ -3324,63 +3478,358 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 		barycenter->SetGravity(false,false);
 		barycenter->SetName(L"barycenter");
 
+		/*
 		star = resourceManager->MakeStar(star_A_size);
 		star->SetMass(star_A_mass);//in 10^24 kg
 		star->SetGravity(true,false);
 		star->SetName(name+L" A");//name of star system
-		star->SetOrbitalParams(barycenter,starOrbit*star_B_mass/starMass,starOrbitPeriod,starOrbitPhase);
+		*/
+		GenerateComponent(resourceManager,star_A_mass,star_A_orbit,&star);
+		star->SetOrbitalParams(barycenter,star_A_orbit,starOrbitPeriod,starOrbitPhase);
 
 		//DEBUG INFO
-		wprintf(L" Star %ws\r\n",star->GetName().c_str());
+		//wprintf(L" Star %ws\r\n",star->GetName().c_str());
 
+		/*
 		star = resourceManager->MakeStar(star_B_size);
 		star->SetMass(star_B_mass);//in 10^24 kg
 		star->SetGravity(true,false);
-		star->SetName(name+L" B");//name of star system
-		star->SetOrbitalParams(barycenter,starOrbit*star_A_mass/starMass,starOrbitPeriod,starOrbitPhase+TWO_PI*.5);
+		star->SetName(name+L" B");//name of star system*/
+		GenerateComponent(resourceManager,star_B_mass,star_B_orbit,&star);
+		star->SetOrbitalParams(barycenter,star_B_orbit,starOrbitPeriod,starOrbitPhase+TWO_PI*.5);
 
 		//DEBUG INFO
-		wprintf(L" Star %ws\r\n",star->GetName().c_str());
+		//wprintf(L" Star %ws\r\n",star->GetName().c_str());
+
+		*rootObject = barycenter;
 
 	}
 
+}
 
-	//planet = MakeStar(planetSizes[0]*.01f);//sun is 10 times larger, compared to orbits
-	//planet->SetMass(planetMass[0]);
-	//planet->SetGravity(true,false);
-/*
-	for (s32 i=1;i<10;i++)
+void GalaxyStarSystem::GenerateComponent2(StarComponent *component)
+{
+	u32 number;
+	f64 fraction, starOrbit, distanceA_H;
+
+
+	for(;;)
 	{
-		//planetSizes - in 6370 km
-		//planetOrbits - in 150M km
-		//planetPeriods - in years
-		//planetMass - in 5.9736*10^24
-		if (i==0)
-			planet = resourceManager->MakeStar(planetSizes[i]*6.37);
-		else
-		{
-			planet = resourceManager->MakePlanet(planetSizes[i]*6.37);//1000km in 1 unit
-			planet->SetOrbitalParams(0,planetOrbits[i]*150000.0,planetPeriods[i]*365.25*86.4,i*i*20.0);//1000 seconds in 1
-		}
-		//if (i==0)
-		{
-			planet->SetName(planetNames[i]);
-			planet->SetMass(planetMass[i]*5.9736);//in 10^24 kg
-			planet->SetGravity(true,false);
-		}
-		//planet->SetOrbitalParams(0,planetOrbits[i]*23.50f,0,0);
+		if (component->outerOrbitLimit<140) //140 units is orbit in AM Canum Venaticorum binary system
+			break;number = 0;//too small limit to make binary subsystem, so single star only
 
-		if (i==3)
+		number = starRNG->GenerateByte();
+
+		if (number<175)
+			break;//Single star, 69%
+
+		//Binary composite
+		component->type = 0;//yet composite
+
+		number = starRNG->GenerateByte();
+		fraction = (0.02 + number * 0.00188);//2% - 49.94% for B component
+
+		component->subComponentA = new StarComponent();
+		component->subComponentB = new StarComponent();
+
+		component->subComponentA->type = 0;
+		component->subComponentB->type = 0;
+
+		component->subComponentA->mass = component->mass*(1.0-fraction);
+		component->subComponentB->mass = component->mass*fraction;
+
+		number = starRNG->GenerateByte();
+		starOrbit = exp(0.02*number)*6000; //exp(0.02*255) =~ 164
+
+		if (starOrbit>component->outerOrbitLimit)
 		{
-			SpaceObject* moon;
-			moon = resourceManager->MakePlanet(1.74);
-			moon->SetOrbitalParams(planet,384.0,2358.72,120.0);
+			number = starRNG->GenerateByte();
+			starOrbit = 140.0+(component->outerOrbitLimit-140.0)*(number*0.0039);
+		}
+
+		//approximate location of L1 point - location of H (gravity compensation)
+		distanceA_H = starOrbit/(1+sqrt(fraction/(1.0-fraction)));
+		component->subComponentA->outerOrbitLimit = 0.9*distanceA_H;//90% in Roche lobe
+		component->subComponentB->outerOrbitLimit = 0.9*(starOrbit-distanceA_H);//90% in Roche lobe
+		component->subComponentsOrbit = starOrbit;
+
+		component->subComponentA->innerOrbitLimit = 0;
+		component->subComponentB->innerOrbitLimit = 0;
+		component->subComponentA->radius = 0;
+		component->subComponentB->radius = 0;
+
+		component->subComponentA->colorIndexBV = 0;
+		component->subComponentA->luminosity = 1;
+		component->subComponentA->subComponentA = 0;
+		component->subComponentA->subComponentB = 0;
+		component->subComponentA->subComponentsOrbit = 0;
+		component->subComponentB->colorIndexBV = 0;
+		component->subComponentB->luminosity = 1;
+		component->subComponentB->subComponentA = 0;
+		component->subComponentB->subComponentB = 0;
+		component->subComponentB->subComponentsOrbit = 0;
+
+		//wprintf(L" | Composite in\r\n");
+
+		GenerateComponent2(component->subComponentA);
+		GenerateComponent2(component->subComponentB);
+
+		//wprintf(L" | Composite out\r\n");
+
+		if (component->subComponentA->radius > component->subComponentA->outerOrbitLimit)
+			break;//component A exceed Roche lobe, prohibited
+		if (component->subComponentB->radius > component->subComponentB->outerOrbitLimit)
+			break;//component B exceed Roche lobe, prohibited
+
+		component->radius = component->subComponentA->radius + component->subComponentB->radius + starOrbit;
+		component->innerOrbitLimit = component->radius;
+
+		//if (component->radius >component->outerOrbitLimit)
+		//	break;//components touch each self - prohibited
+		//wprintf(L" } Composite ends  %f \r\n", component->mass);
+
+		return;//All OK - composite generated
+	}
+
+	//Single star, 69%
+	component->type = 1;//main sequence YET
+
+	//very very dumb
+	component->radius = component->mass*0.002;
+	component->luminosity = 1;
+	component->colorIndexBV = 0;
+
+	component->innerOrbitLimit = component->radius;
+	component->subComponentA = 0;
+	component->subComponentB = 0;
+
+	//wprintf(L" * Single star %f \r\n", component->mass);
+}
+
+SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManager, StarComponent *component)
+{
+	SpaceObject *star, *starB, *planet, *moon, *barycenter;
+	SpaceObject *returnObject;
+
+	//f64 fraction, starOrbit, distanceA_H;
+	f64 star_A_orbit,star_B_orbit, starOrbitPhase,starOrbitPeriod;
+
+	f64 planetOrbit,nextOrbit;
+	f64 planetMass, planetRadius, planetOrbitPeriod,planetOrbitPhase;
+	f64 planetMaxMass;
+	f64 moonOrbitLimit;
+	f64 moonMass, moonRadius, moonOrbitRadius, moonOrbitPeriod, moonOrbitPhase;
+	u32 number;
+	u32 moonLimit;
+	u32 i,j;
+
+	if (component->type==0)
+	{//Composite
+
+		wprintf(L" Composite {\r\n");
+
+		barycenter = resourceManager->MakeBarycenter();
+		barycenter->SetGravity(false,false);
+		barycenter->SetName(L"barycenter");
+
+		star = FinalizeComponent(resourceManager,component->subComponentA);
+		starB = FinalizeComponent(resourceManager,component->subComponentB);
+
+		star_A_orbit = component->subComponentsOrbit*component->subComponentB->mass/component->mass;
+		star_B_orbit = component->subComponentsOrbit*component->subComponentA->mass/component->mass;
+
+		//totally random
+		number = starRNG->GenerateByte();
+		starOrbitPhase = number * TWO_PI/256.0;
+
+		starOrbitPeriod = TWO_PI * component->subComponentsOrbit * sqrt(component->subComponentsOrbit/(component->mass*G_CONSTANT));
+
+		star->SetOrbitalParams(barycenter,star_A_orbit,starOrbitPeriod,starOrbitPhase);
+
+		starB->SetOrbitalParams(barycenter,star_B_orbit,starOrbitPeriod,starOrbitPhase+TWO_PI*.5);
+
+		wprintf(L" } Composite ends  %f \r\n", component->mass);
+		returnObject = barycenter;
+	}
+	else
+	{
+		star = resourceManager->MakeStar(component->radius);
+		star->SetMass(component->mass);//in 10^24 kg
+		star->SetGravity(true,false);
+		{
+			wchar_t tmp[255];
+			swprintf(tmp, 255, L"%ws %wc", name.c_str(), 65+componentIndex);
+			star->SetName(tmp);
+		}
+		componentIndex++;
+
+		wprintf(L" * Single star %f \r\n", component->mass);
+		returnObject = star;
+	}
+
+	//Now generating planets and moons
+	number = starRNG->GenerateByte();
+	
+	//1st planet orbit
+	//nextOrbit = starSize * (30.0+number*0.3);//30 - 107
+
+	planetOrbit = component->innerOrbitLimit * 2;
+	//Kepler-16b have k = 3.14  (around binary Kepler-16AB)
+	//WASP-12b have k = 3.14 (around WASP-12)
+	//Mercury/Sun have k = 83.3
+
+	planetOrbit = planetOrbit * (1.0+number*0.4);//k = 1.0 - 103.0
+
+	//planet generation cycle
+	for (i = 1;;) //exit from the middle
+	{
+		number = starRNG->GenerateByte();
+
+		//check breaking
+		if (i==1)
+		{
+			if (number>=0xF0)
+				break;//no planets with probab 6.25%
+		}
+		else if (i<5)
+		{
+			if (number>=0xE0)
+				break;
+		}
+		else 
+		{
+			if (number>=0x80)
+				break;//all next planets with probability 50% from previous one
+		}
+
+		if (planetOrbit>component->outerOrbitLimit)
+			break;//planet orbit may to exceed outer orbit limit for component
+
+		//OrbitPhase = epoch - totally random (unless we set up orbit resonance and so on)
+		number = starRNG->GenerateByte();
+		planetOrbitPhase = number * TWO_PI/256.0;
+
+		//STOPS here
+		//PLANET MASS should be small part of host component's mass
+		//2% = 1/50, while known low limit is 74 for HD 114762 b
+
+		planetMaxMass = component->mass*0.02;
+
+		if (planetMaxMass < 0.2)
+			break;//To small star to host any planets
+
+		//Most massive planet HD 217786 is ~13 Mjupiter, which is ~24674 massunit
+		if (planetMaxMass>25000)
+			planetMaxMass = 25000;
+	
+		number = starRNG->GenerateByte();
+		
+		//0.02 - ~1000 of Earth, 0.12 - 5973 massunits
+		planetMass = 0.12 + number*planetMaxMass/255.0;
+
+		//0.2 R of Earth - 1.8 R of Jupiter: 1.2 - 126 Mm
+		//planetRadius = 1.2 + number*0.49;//proportional to mass
+
+		planetRadius = 5.5*pow(planetMass,0.33) - 1.5; //very aproximate
+
+		moonLimit = number;//the larger the value - more moons
+
+
+		//May be checked only for 1st planet
+		if ((planetOrbit-planetRadius)<component->innerOrbitLimit)
+			goto lNextPlanet;
+
+		if ((planetOrbit+planetRadius)>component->outerOrbitLimit)
+			break;//planet orbit + size may to exceed outer orbit limit for component
+
+
+		//periods is stricly defined by orbit and star mass
+		//p = 2*pi * a*(a/G*M)^1/2
+		planetOrbitPeriod = TWO_PI * planetOrbit * sqrt(planetOrbit/(component->mass*G_CONSTANT));
+
+
+		//http://en.wikipedia.org/wiki/Extrasolar_planet#Mass_distribution
+
+		planet = resourceManager->MakePlanet(planetRadius);
+		planet->SetOrbitalParams(returnObject,planetOrbit,planetOrbitPeriod,planetOrbitPhase);//1000 seconds in 1
+
+		{
+			wchar_t tmp[255];
+			planetIndex++;
+			swprintf(tmp, 255, L"Planet %i", planetIndex);
+			planet->SetName(tmp);
+		}
+
+		planet->SetMass(planetMass);//in 10^24 kg
+		planet->SetGravity(true,false);
+		i++;
+
+		//moon orbit may not exceed inner limit for planet system
+		moonOrbitLimit = planetOrbit - component->innerOrbitLimit;
+
+		//moon orbit may not exceed outer limit for planet system
+		if ((planetOrbit + moonOrbitLimit)>component->outerOrbitLimit)
+			moonOrbitLimit = component->outerOrbitLimit - planetOrbit;
+
+		moonOrbitRadius = 5000 + 3*planetRadius;
+
+		for (j=0;;j++)
+		{
+			if (moonOrbitRadius>moonOrbitLimit)
+				break;
+
+			number = starRNG->GenerateByte();
+
+			if (number>moonLimit)
+				break;//no (more) moon
+
+			number = starRNG->GenerateByte();
+			moonMass = (number+1)*0.000275;//0- 0.07 massunits
+
+			moonRadius = (number+1)*0.008;//- 2 Mm
+
+			if ((moonOrbitRadius+moonRadius) >moonOrbitLimit)
+				break;//moon orbit + size exceed moon orbit limit
+			
+			moonOrbitPeriod = TWO_PI * moonOrbitRadius * sqrt(moonOrbitRadius/(planetMass*G_CONSTANT));
+
+			//OrbitPhase = epoch - totally random (unless we set up orbit resonance and so on)
+			number = starRNG->GenerateByte();
+			moonOrbitPhase = number * TWO_PI/256.0;
+
+			moon = resourceManager->MakePlanet(moonRadius);
+			moon->SetOrbitalParams(planet,moonOrbitRadius,moonOrbitPeriod,moonOrbitPhase);
 			moon->SetMass(.0123*5.9736);
 			moon->SetGravity(true,false);
-			moon->SetName(L"Moon");
+			{
+				wchar_t tmp[255];
+				swprintf(tmp, 255, L"Moon %i%c", planetIndex,97+j);
+				moon->SetName(tmp);
+			}
+
+			number = starRNG->GenerateByte();
+			moonOrbitRadius = moonOrbitRadius + 1000 + number*4;
+			number = starRNG->GenerateByte();
+			moonOrbitRadius = moonOrbitRadius * (1.1+number*0.001);
+
+			
 		}
-	}*/
+
+		//DEBUG INFO
+		wprintf(L"  %s with %i moons\r\n",planet->GetName().c_str(),j);
+
+lNextPlanet:
+		//to next orbit
+		number = starRNG->GenerateByte();
+		nextOrbit = planetOrbit * (1.3+number*0.0027);//1.3 - 1.99
+
+		moonOrbitLimit = 0.5*(nextOrbit - planetOrbit);//moon orbit not more then planet inter-orbit span
+		planetOrbit = nextOrbit;
+	}
+
+	return returnObject;
 }
+
 
 //#########################################################################
 //SHA-1 - SHA-1 crypto hash
