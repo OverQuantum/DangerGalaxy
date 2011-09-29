@@ -110,6 +110,9 @@ coding demo1:
 110916: ADD: planets around multiple stars
 
 110928: ADD: planet mass limit (depends on host star mass)
+110929: CHG: start system is now nearest to (0,0)
+110929: ADD: cache of near star systems
+110929: ADD: real size galaxy, 100kx100k ly, quad form yet
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -135,12 +138,14 @@ DONE:
 + FTL limit from constant to PlayerShip
 + playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 + RNGs and seeds
++ generation of double and multiple stars
 
 TODO
--1 generation of double and multiple stars
--2 more physics in star systems - HR and so on
+-1 more physics in star systems - HR and so on
 
 -2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
+
+- Remove index "A" for root stars in single-star systems
 
 
 - messages on main screen
@@ -765,22 +770,26 @@ class Galaxy
 {
 public:
 	void Init();//creation
-	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);
-	GalaxyStarSystem* GetNearStarSystem(vector2d coordinates);
+	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);//Get star system in quadrant
+	GalaxyStarSystem* GetNearStarSystem(vector2d coordinates);//Get nearest star system by exact coordinates
 	//void AddNearStarSystems(GamePhysics * gamePhysics);
-	void AddNearStarSystems(MapSpaceView* mapView);
-
-	u32 CheckStarPresence(vector2ds coordinates);
-
-	GalaxyStarSystem* GetStartStarSystem();
+	void AddNearStarSystems(MapSpaceView* mapView);//Add markers of near star system to MapView
+	u32 CheckStarPresence(vector2ds coordinates);//Check only presence of star in quadrant
+	GalaxyStarSystem* GetStartStarSystem(); //Get star system of player start
+	void UpdatePlayerLocation(vector2d coordinates);//For updating cache of stars
 
 	GalaxyStarSystem* DebugJump();
 
 private:
 	u32 debugStarCounter;
 	u8 galaxySeed[16];//seed of whole galaxy
-	DeterminedRandomGenerator* galaxyRNG;
-	core::array<GalaxyStarSystem*> knownStars;//TODO: in future replace array by seed-based generator
+	DeterminedRandomGenerator* galaxyRNG;//
+	
+	core::array<GalaxyStarSystem*> knownStars;//cache for near stars
+	vector2ds knownStarsCenter;//center of cache
+
+	GalaxyStarSystem* SeedStar(vector2ds coordinates);//seed star system from galaxy seed. Prereq: galaxyRNG must be seeded with coordinates in CheckStarPresence() or so
+	void UpdateKnownStars();//Updates caches (ex. in case of player moves to quadrant other than center of cache)
 };
 
 //Information about 1 star system in the galaxy
@@ -2247,9 +2256,17 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	}
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_J))
 	{
-		vector3d tempPos = playerShip->GetPosition();
-		gameRoot->GoStarSystem(gameRoot->GetGalaxy()->DebugJump());
-		playerShip->SetPosition(tempPos);
+		GalaxyStarSystem* jumpTo;
+		jumpTo = gameRoot->GetGalaxy()->DebugJump();
+		if (jumpTo)
+		{
+			vector3d tempPos = playerShip->GetPosition();
+			gameRoot->GoStarSystem(jumpTo);
+			playerShip->SetPosition(tempPos);
+			
+			playerShip->UpdateGalaxyCoordinates();
+			gameRoot->GetGalaxy()->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
+		}
 	}
 
 
@@ -2454,6 +2471,8 @@ void MapSpaceView::Activate()
 
 	gamePhysics->MakeMap(this);
 
+	gameRoot->GetGalaxy()->UpdatePlayerLocation(gameRoot->GetPlayerShip()->GetGalaxyCoordinates());
+
 	gameRoot->GetGalaxy()->AddNearStarSystems(this);
 
 	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
@@ -2475,7 +2494,7 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 	
 	
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
-		//if (cameraDistanceDegree<4000)
+		//if (cameraDistanceDegree<8200) //estimated good to see ~10 LY in all directions
 		{
 			cameraDistanceDegree++;
 
@@ -2770,6 +2789,8 @@ void DG_Game::Update() {
 	//Check that player reach border some star system and so this system should be loaded
 	if (gamePhysics->IsInterstellar())
 	{
+		wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
+
 		//TODO: this is dumb check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
 		GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
 		if (nearStarSystem)
@@ -2997,11 +3018,6 @@ void PlayerShip::UpdateGalaxyCoordinates()
 
 void Galaxy::Init()
 {
-	s32 x,y;
-	//s32 n = 0;
-	text_string starName;
-	vector2ds coordinates;
-
 	debugStarCounter = 0;
 
 	//TEMP
@@ -3019,42 +3035,43 @@ void Galaxy::Init()
 
 	galaxyRNG->SetSeed(galaxySeed,16);
 
-	for (y=0;y<10;y++)
-	{
-		coordinates.Y = y;
-		for (x=0;x<10;x++)
-		{
-			coordinates.X = x;
-			if (CheckStarPresence(coordinates)==1)
-			{
-				u8 starSeed[16];
-				galaxyRNG->SetOffset(10);
-				galaxyRNG->GenerateBytes(starSeed,16);
+	knownStarsCenter.X = 0;
+	knownStarsCenter.Y = 0;
 
-				//starName = L"Star ";
-				//starName +=n;
-				//GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(coordinates);
-				GalaxyStarSystem* newSystem = new GalaxyStarSystem(coordinates);
-				newSystem->SetSeed(starSeed,16);
-				newSystem->GenerateStar();
-				knownStars.push_back(newSystem);
-				//newSystem->SetName(text_string(tmp));
-			}
-		}
-	}
-	
-	//knownStars.
+	UpdateKnownStars();
+
 }
 
 GalaxyStarSystem* Galaxy::GetStarSystem(vector2ds coordinates)
 {
-	u32 i;
+	//u32 i;
+
+	if (CheckStarPresence(coordinates)==1)
+	{
+		return SeedStar(coordinates);
+	}
+	
+	return 0;
+
+	/*
 	for (i=0;i<knownStars.size();i++)
 	{
 		if (coordinates==knownStars[i]->GetGalaxyQuadrant())
 			return knownStars[i];
-	}
+	}*/
 	return 0;
+}
+
+void Galaxy::UpdatePlayerLocation(vector2d coordinates)
+{
+	vector2ds quadrant;
+	quadrant.X = (s32)floor(coordinates.X);
+	quadrant.Y = (s32)floor(coordinates.Y);
+	if (quadrant!=knownStarsCenter)
+	{
+		knownStarsCenter = quadrant;
+		UpdateKnownStars();
+	}
 }
 
 GalaxyStarSystem* Galaxy::GetNearStarSystem(vector2d coordinates)
@@ -3063,6 +3080,9 @@ GalaxyStarSystem* Galaxy::GetNearStarSystem(vector2d coordinates)
 	f64 minDistanceSQ=STAR_SYSTEM_RADIUS*STAR_SYSTEM_RADIUS; //So nothing is returned in case of too-far system
 	f64 distanceSQ;
 	GalaxyStarSystem* minDistanceObject=0;
+
+	//Don't forget to call UpdatePlayerLocation beforehand
+
 	for (i=0;i<knownStars.size();i++)
 	{
 		//TODO: optimize by using (???)
@@ -3102,6 +3122,8 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 
 u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 {
+	if (coordinates.X<-65536 || coordinates.X>65535 || coordinates.Y<-65536 || coordinates.Y>65535)
+		return 0;//no stars outside 131072x131072 quad
 	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,coordinates.X,coordinates.Y);
 	if (galaxyRNG->GetByteByOffset(0)<0x30)
 		return 1;//star present
@@ -3110,17 +3132,117 @@ u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 
 GalaxyStarSystem* Galaxy::GetStartStarSystem()
 {
-	return knownStars[0];
+	u32 i;
+	f64 minDistanceSQ=1e20;
+	f64 distanceSQ;
+	GalaxyStarSystem* minDistanceObject=0;
+
+	knownStarsCenter.X = 0;
+	knownStarsCenter.Y = 0;
+	UpdateKnownStars();//update cache of stars around (0,0)
+
+	for (i=0;i<knownStars.size();i++)
+	{
+		distanceSQ = (knownStars[i]->GetGalaxyCoordinates()).getLengthSQ();//distance from (0,0)
+		if (distanceSQ<minDistanceSQ)
+		{
+			minDistanceSQ = distanceSQ;
+			minDistanceObject = knownStars[i];
+		}
+	}
+
+	if (!minDistanceObject)
+		minDistanceObject = knownStars[0];
+	return minDistanceObject;
 }
 
 GalaxyStarSystem* Galaxy::DebugJump()
 {
+	/*
+	//Cycle thru all knownStars, good only if this list is fixed
 	debugStarCounter++;
 	if (debugStarCounter>=knownStars.size())
 		debugStarCounter=0;
 	return knownStars[debugStarCounter];
+	*/
+
+	/*
+	//Fixed-random from current coordinates to one of nearest stars
+	u32 numnber;
+	if (knownStars.size()==0)
+		return 0;
+	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,knownStarsCenter.X,knownStarsCenter.Y);
+	numnber = galaxyRNG->GetByteByOffset(debugStarCounter);
+	debugStarCounter++;//cycle to remove deadloop (debugjump to same system)
+	return knownStars[numnber%knownStars.size()];*/
+
+	vector2ds randomLocation;
+	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,knownStarsCenter.X,knownStarsCenter.Y);
+	galaxyRNG->SetOffset(777);
+
+	for (u32 i=0;i<100;i++)
+	{
+		randomLocation.X = -65536 + galaxyRNG->GenerateByte();
+		randomLocation.X += galaxyRNG->GenerateByte()*256;
+		randomLocation.X += (galaxyRNG->GenerateByte()&1)*65536;
+
+		randomLocation.Y = -65536 + galaxyRNG->GenerateByte();
+		randomLocation.Y += galaxyRNG->GenerateByte()*256;
+		randomLocation.Y += (galaxyRNG->GenerateByte()&1)*65536;
+
+		if (CheckStarPresence(randomLocation)==1)
+		{
+			return SeedStar(randomLocation);
+		}
+	}
+	return 0;
+
 }
 
+GalaxyStarSystem* Galaxy::SeedStar(vector2ds coordinates)
+{
+	u8 starSeed[16];
+
+	//galaxyRNG is seeded with coordinates in CheckStarPresence()
+	galaxyRNG->SetOffset(10);
+	galaxyRNG->GenerateBytes(starSeed,16);
+
+	//starName = L"Star ";
+	//starName +=n;
+	//GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(coordinates);
+	GalaxyStarSystem* newSystem = new GalaxyStarSystem(coordinates);
+	newSystem->SetSeed(starSeed,16);
+	newSystem->GenerateStar();
+	//newSystem->SetName(text_string(tmp));
+
+	return newSystem;
+}
+
+
+void Galaxy::UpdateKnownStars()
+{
+	s32 x,y;
+	//s32 n = 0;
+	text_string starName;
+	vector2ds coordinates;
+
+	knownStars.clear();
+
+	for (y=-10;y<10;y++)
+	{
+		coordinates.Y = knownStarsCenter.Y+y;
+		for (x=-10;x<10;x++)
+		{
+			coordinates.X = knownStarsCenter.X+x;
+			if (CheckStarPresence(coordinates)==1)
+			{
+				knownStars.push_back(SeedStar(coordinates));
+			}
+		}
+	}
+	
+	//knownStars.
+}
 
 //#########################################################################
 //GalaxyStarSystem
