@@ -113,6 +113,10 @@ coding demo1:
 110929: CHG: start system is now nearest to (0,0)
 110929: ADD: cache of near star systems
 110929: ADD: real size galaxy, 100kx100k ly, quad form yet
+110929: CHG: debug jump around whole galaxy
+110930: CHG: galaxy is now have circular form and fading density of stars
+110930: CHG: intergalactic stars added
+110930: CHG: star presence check upgraded (for multybyte random)
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -492,7 +496,7 @@ class GamePhysics {
 		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
 		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
 		void SetPlayerShip(PlayerShip* newPlayerShip) {playerShip = newPlayerShip;}
-		void SetTimeSpeed(f64 newSpeed) {timeSpeed = newSpeed;}
+		void SetTimeSpeed(f64 newSpeed);
 
 		void Update(f64 time);
 		void UpdateNodes(SpaceObject* centerSceneObject);
@@ -1440,6 +1444,13 @@ void SpaceObject::BreakFTL(f64 remainingSpeed)
 
 //#########################################################################
 //GamePhysics
+
+void GamePhysics::SetTimeSpeed(f64 newSpeed)
+{
+	timeSpeed = newSpeed;
+	wprintf(L"DG: timespeed is %f\r\n",timeSpeed);
+}
+
 
 void GamePhysics::Update(f64 time)
 {
@@ -3122,11 +3133,45 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 
 u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 {
+	f64 starDensity;
+	f64 number;
+
+	vector2d coords = vector2d(coordinates.X,coordinates.Y);
 	if (coordinates.X<-65536 || coordinates.X>65535 || coordinates.Y<-65536 || coordinates.Y>65535)
 		return 0;//no stars outside 131072x131072 quad
+	
+	//Calc star density, v1 circular galaxy without spiral arms at all
+	starDensity = 0.5*exp(-4.70e-9*coords.getLengthSQ()); //gives half-height on ~12000 ly;
+	if (starDensity<1.5e-7)
+		starDensity = 1.5e-7;//it gives about 1000 (intergalactic) stars outside R=~57000 ly
+
+	//Now we must generate random number in range [0,1)
+	//If number will be less than density, then star is present in quadrant
+	//To do so we:
+	//1) Generate one random byte, scale density by 256 and compare them
+	//2) If random is larger, then no star
+	//3) If density is too small (<16) then scale density and number by 256 and add one more random byte to a number
+	//4) Loop 3
+	//5) If random is still smaller then there is a star system
+
 	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,coordinates.X,coordinates.Y);
-	if (galaxyRNG->GetByteByOffset(0)<0x30)
-		return 1;//star present
+	
+	//Get 1st random byte and scale density
+	number = galaxyRNG->GetByteByOffset(0);
+	starDensity *=256.0;
+
+	while (starDensity<16.0)
+	{
+		if (number>starDensity)
+			return 0;//no star ( random number is greater then density)
+
+		//Get next random byte and scale density
+		number = number*256.0+galaxyRNG->GenerateByte();
+		starDensity *=256.0;
+	}
+
+	if (number<starDensity)
+		return 1;//star present (random nu,ber is less than density)
 	return 0;//no star
 }
 
@@ -3180,7 +3225,7 @@ GalaxyStarSystem* Galaxy::DebugJump()
 	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,knownStarsCenter.X,knownStarsCenter.Y);
 	galaxyRNG->SetOffset(777);
 
-	for (u32 i=0;i<100;i++)
+	for (u32 i=0;i<1000;i++)
 	{
 		randomLocation.X = -65536 + galaxyRNG->GenerateByte();
 		randomLocation.X += galaxyRNG->GenerateByte()*256;
@@ -3240,6 +3285,8 @@ void Galaxy::UpdateKnownStars()
 			}
 		}
 	}
+
+	wprintf(L"DG: quadrant (%i,%i) stars around: %i\r\n",knownStarsCenter.X,knownStarsCenter.Y,knownStars.size());
 	
 	//knownStars.
 }
