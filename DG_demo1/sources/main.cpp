@@ -117,6 +117,11 @@ coding demo1:
 110930: CHG: galaxy is now have circular form and fading density of stars
 110930: CHG: intergalactic stars added
 110930: CHG: star presence check upgraded (for multybyte random)
+101001: FIX: zoom speed is now FPS-independent
+111001: FIX: UndeterminedRandomGenerator::GenerateBytes
+111001: CHG: stellar density field (+ debug dump)
+111001: ADD: galaxy radius and density in core is randomized from galaxy seed
+111001: ADD: star count estimation
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -255,6 +260,10 @@ using namespace irr;
 
 //Radius of star system in light-years (used to enter/leave star system check)
 #define STAR_SYSTEM_RADIUS 0.1
+
+//Density of stars outside galaxy outer radius
+//Value 1.5e-7 gives ~2600 stars in whole galaxy quad and ~1000 stars outside r=57000 ly
+#define INTERGALACTIC_STARS_DENSITY 1.5e-7
 
 //Maximum time between frames, in seconds
 //Limits low FPS and slowdowns game if lower
@@ -684,7 +693,7 @@ public:
 	void Close();
 
 	f64 GetCameraDistance() {return cameraDistance;}
-	s32 cameraDistanceDegree;
+	f64 cameraDistanceDegree;
 
 	void Clean();
 
@@ -730,7 +739,7 @@ public:
 	void AddObject(SpaceObject* spaceObject);
 	void AddStarMarker(GalaxyStarSystem* starSystem);
 
-	s32 cameraDistanceDegree;
+	f64 cameraDistanceDegree;
 
 	void UpdateCameraDistance();
 
@@ -782,12 +791,23 @@ public:
 	GalaxyStarSystem* GetStartStarSystem(); //Get star system of player start
 	void UpdatePlayerLocation(vector2d coordinates);//For updating cache of stars
 
+	void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
+
 	GalaxyStarSystem* DebugJump();
 
 private:
 	u32 debugStarCounter;
+
+	f64 halfDensityRadius;//10k-17k ly, ~14600 ly for Milky Way
+	f64 maxDensity;//stellar density in the core, should vary from 0.1 to 0.6
+	f64 outerRadius;//beyond that is intergalaxy space
+
+	f64 starCountEstimation;// amount of star systems in a galaxy, estimation by stellar density field
+
 	u8 galaxySeed[16];//seed of whole galaxy
 	DeterminedRandomGenerator* galaxyRNG;//
+
+	f32 stellarDensity[2048][2048];//stellar density field
 	
 	core::array<GalaxyStarSystem*> knownStars;//cache for near stars
 	vector2ds knownStarsCenter;//center of cache
@@ -2171,7 +2191,7 @@ void RealSpaceView::Init()
 	//MOVEMENT_SPEED = 5.0;
 
 	//smgr->saveScene("1.irrexp");
-	cameraDistanceDegree = 1000;
+	cameraDistanceDegree = 1000.0;
 	UpdateCameraDistance();
 }
 
@@ -2280,6 +2300,10 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 	}
 
+	if (eventReceiver->IsKeyDown(irr::KEY_KEY_Q))
+	{
+		gameRoot->GetGalaxy()->DebugDump();
+	}
 
 	//playerShip->thrustPower = thrust*MOVEMENT_SPEED*5.f;
 	//playerShip->rotationSpeed = rotate;
@@ -2320,7 +2344,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
 		if (cameraDistanceDegree<4000)
 		{
-			cameraDistanceDegree++;
+			cameraDistanceDegree+=frameDeltaTime*2000.0;
 			//cameraDistance *= 1.f*(1.f+frameDeltaTime);
 			UpdateCameraDistance();
 		}
@@ -2329,7 +2353,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		if (cameraDistanceDegree>-100)
 		{
 			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
-			cameraDistanceDegree--;
+			cameraDistanceDegree-=frameDeltaTime*2000.0;
 			UpdateCameraDistance();
 		}
 
@@ -2492,7 +2516,7 @@ void MapSpaceView::Activate()
 	camera->setPosition(vector3df(0,0,-100.f));
 	camera->setFarValue(200.f);
 
-	cameraDistanceDegree = 5500;
+	cameraDistanceDegree = 5500.0;
 	UpdateCameraDistance();
 }
 
@@ -2507,7 +2531,7 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
 		//if (cameraDistanceDegree<8200) //estimated good to see ~10 LY in all directions
 		{
-			cameraDistanceDegree++;
+			cameraDistanceDegree+=frameDeltaTime*2000.0;
 
 			//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
 			//gamePhysics->UpdateMapMarkers(mapScale);
@@ -2518,7 +2542,7 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		//if (cameraDistanceDegree>0)
 		{
 			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
-			cameraDistanceDegree--;
+			cameraDistanceDegree-=frameDeltaTime*2000.0;
 			//UpdateCameraDistance();
 			//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
 			//gamePhysics->UpdateMapMarkers(mapScale);
@@ -2871,7 +2895,7 @@ void DG_Game::ActivateFTL()
 void DG_Game::GoInterstellar()
 {
 	vector2d playerGalaxyCoordinates;
-	s32 cameraDistance = RealSpace->cameraDistanceDegree;
+	f64 cameraDistance = RealSpace->cameraDistanceDegree;
 
 	currentStarSystem = 0;
 
@@ -2895,7 +2919,7 @@ void DG_Game::GoInterstellar()
 
 void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 {
-	s32 cameraDistance = RealSpace->cameraDistanceDegree;
+	f64 cameraDistance = RealSpace->cameraDistanceDegree;
 	vector2d playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
 
 	vector2d playerRelativeCoordinates;
@@ -3049,6 +3073,45 @@ void Galaxy::Init()
 	knownStarsCenter.X = 0;
 	knownStarsCenter.Y = 0;
 
+	s32 x,y;
+	s32 number;
+	f64 stellarDensity1;
+	f64 densityKoeff;
+	starCountEstimation=0;
+	vector2d coords;
+
+	for (;;)
+	{
+		number = galaxyRNG->GenerateByte();
+		halfDensityRadius = 10000.0+27.4*number;//10k-17k
+		number = galaxyRNG->GenerateByte();
+		maxDensity = 0.2 + 0.0015*number; //0.2 - 0.6
+		outerRadius = sqrt(log(maxDensity/INTERGALACTIC_STARS_DENSITY))*halfDensityRadius;
+		
+		if (outerRadius<65530)//if > then generate density and radius one again
+			break;
+	}
+
+	densityKoeff = -1.0/(halfDensityRadius*halfDensityRadius);
+
+	//Generate stellar density field, which will be used later for generation of stars
+	for (y=0;y<2048;y++)
+	for (x=0;x<2048;x++)
+	{
+		coords.X = x*64-65504;//-65504 = -65536+32
+		coords.Y = y*64-65504;
+
+		//Calc star density, v1 elliptical (E0) galaxy - no spiral arms at all
+		stellarDensity1 = maxDensity*exp(densityKoeff*coords.getLengthSQ()); //gives half-height on ~12000 ly;
+		if (stellarDensity1<INTERGALACTIC_STARS_DENSITY)
+			stellarDensity1 = INTERGALACTIC_STARS_DENSITY;
+		
+		stellarDensity[x][y]=(f32)stellarDensity1;
+		starCountEstimation+=stellarDensity1*4096.0;//4096 = 64*64 ly
+	}
+
+	wprintf(L"DG: Galaxy generated, ~%.0f star systems\r\n",starCountEstimation);
+
 	UpdateKnownStars();
 
 }
@@ -3135,16 +3198,17 @@ u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 {
 	f64 starDensity;
 	f64 number;
+	s32 x,y;
 
-	vector2d coords = vector2d(coordinates.X,coordinates.Y);
+	//vector2d coords = vector2d(coordinates.X,coordinates.Y);
 	if (coordinates.X<-65536 || coordinates.X>65535 || coordinates.Y<-65536 || coordinates.Y>65535)
 		return 0;//no stars outside 131072x131072 quad
-	
-	//Calc star density, v1 circular galaxy without spiral arms at all
-	starDensity = 0.5*exp(-4.70e-9*coords.getLengthSQ()); //gives half-height on ~12000 ly;
-	if (starDensity<1.5e-7)
-		starDensity = 1.5e-7;//it gives about 1000 (intergalactic) stars outside R=~57000 ly
 
+	x = (coordinates.X+65536)>>6;//divide by 64
+	y = (coordinates.Y+65536)>>6;//divide by 64
+
+	starDensity = stellarDensity[x][y];
+	
 	//Now we must generate random number in range [0,1)
 	//If number will be less than density, then star is present in quadrant
 	//To do so we:
@@ -3200,6 +3264,28 @@ GalaxyStarSystem* Galaxy::GetStartStarSystem()
 		minDistanceObject = knownStars[0];
 	return minDistanceObject;
 }
+
+void Galaxy::DebugDump()
+{
+	//vector2ds coord1,coord0,coord;
+	s32 x,y;
+	//s32 count;
+	u8 byte;
+	FILE * f1 = fopen("galaxy.raw","wb");
+
+	for (y=0;y<2048;y++)
+	{
+		for (x=0;x<2048;x++)
+		//for (coord0.X=53376;coord0.X<65536;coord0.X+=64)
+		{
+			//byte=(u8)(stellarDensity[x][y]*500.0);
+			byte=(u8)(255-log(stellarDensity[x][y])*15.0);
+			fwrite(&byte,1,1,f1);
+		}
+	}
+	fclose(f1);
+}
+
 
 GalaxyStarSystem* Galaxy::DebugJump()
 {
@@ -4301,6 +4387,12 @@ u8 UndeterminedRandomGenerator::GenerateByte()
 //write <len> bytes 
 void UndeterminedRandomGenerator::GenerateBytes(u8* destination, u32 len)
 {
+	//TODO: !!!
+	u32 i;
+	for (i=0;i<len;i++)
+	{	//NOT OPTIMIZED
+		destination[i]=GenerateByte();
+	}
 }
 
 void UndeterminedRandomGenerator::GenerateBlock()
