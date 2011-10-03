@@ -56,7 +56,7 @@ coding demo1:
 110615: CHG: all physics to double
 110615: ADD: 4 levels of thrust
 110615: ADD: debug text, diplaying speed in km/s and c
-110615: ADD: pseudo-relativistiv effect after 0.8c, speed=c could not be achived
+110615: ADD: pseudo-relativistic effect after 0.8c, speed=c could not be achived
 110616: CHG: UTF16 removed
 110616: ADD: gravity field info
 110616: CHG: gravity radius, inside planets and stars gravity is now linear fading (~r) instead of singularity (~1/r^2)
@@ -122,8 +122,10 @@ coding demo1:
 111001: CHG: stellar density field (+ debug dump)
 111001: ADD: galaxy radius and density in core is randomized from galaxy seed
 111001: ADD: star count estimation
+111003: FIX: lightspeed limit improved, more physical, from 0.5c
 
 110901: TMP: DeterminedRandomGenerator test printf
+
 
 
 DONE:
@@ -150,6 +152,7 @@ DONE:
 + generation of double and multiple stars
 
 TODO
+0 why map in insterstallar is showed with center on position of ship of previous call for map?
 -1 more physics in star systems - HR and so on
 
 -2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
@@ -1278,6 +1281,7 @@ void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 void SpaceObject::UpdatePhysics(f64 time)
 {
 	vector3d acceleration = vector3d(0,0,0);
+	vector3d prevSpeedVector;
 	switch (motionType)
 	{
 	case MOTION_NONE:
@@ -1296,22 +1300,45 @@ void SpaceObject::UpdatePhysics(f64 time)
 			acceleration += physics->GetGravityAcceleration(position);
 		}
 		rotation += rotationSpeed*time;
+		
+		prevSpeedVector = speed;
 		speed += acceleration*time;
 
 		//TODO: use LIGHTSPEED instead of fixed constants
-		if (speed.getLength()>240000.0)
+		//TODO: optimize by getLengthSQ
+		if (speed.getLength()>150000.0)
 		{
-			//above 0.8c - activate "relativistic" effects
-			//currently effect is very rough, but give good result - no more than 0.9997 speed
-			f64 relativisticDrag;
-			f64 prevSpeed = (speed - acceleration*time).getLength();
-			relativisticDrag = (speed.getLength()-240000.0)/60000.0;//0 at 0.8c, 1 at 1c;
-			relativisticDrag *= (speed.getLength() - prevSpeed)/prevSpeed;
+			//above 0.8c - activate "relativistic" effects, lightspeed limit
+			//effect is performed by 1) calculating relativistic momentum from previous speed
+			//2) adding F*t to it 3) calculating new speed from new momentum
+			//this is not really relativistic effect of external forces, but gives good effect of hard-to-achieve and hard-do-break of sub-lightspeeds
+			//(instead of momentum calculated pseudo-momentum - without mass)
+			f64 newSpeed;
+			f64 pseudoRelativisticKoeff,pRIsq;
+			vector3d pseudoRelativisticImpulse;
+
+			//calc pseudoRelativisticImpulse from previous speed
+			pseudoRelativisticKoeff = 1.0 - prevSpeedVector.getLengthSQ()/(LIGHTSPEED*LIGHTSPEED);
+			if (pseudoRelativisticKoeff<1e-10) 
+				pseudoRelativisticKoeff = 1e-10;
+			pseudoRelativisticImpulse = prevSpeedVector/sqrt(pseudoRelativisticKoeff); //max = 1e5
+			
+			//add external forces by F*t
+			pseudoRelativisticImpulse+=acceleration*time;
+
+			//calc speed from new pseudoRelativisticImpulse
+			pRIsq = pseudoRelativisticImpulse.getLengthSQ(); //pseudo relativistic impulse, square of len
+			newSpeed = LIGHTSPEED*sqrt(pRIsq/(pRIsq + LIGHTSPEED*LIGHTSPEED));
+
+			pseudoRelativisticImpulse.normalize();
+			speed=pseudoRelativisticImpulse*newSpeed;
+
+			//Adjust acceleration for further calculation of position shift
 			if (time>0)
 			{
-				acceleration-=speed*relativisticDrag/time;
+				acceleration=(speed-prevSpeedVector)/time;
 			}
-			speed-=speed*relativisticDrag;
+			
 		}
 		//else
 		{
