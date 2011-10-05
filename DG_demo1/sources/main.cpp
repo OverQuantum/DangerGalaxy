@@ -123,6 +123,13 @@ coding demo1:
 111001: ADD: galaxy radius and density in core is randomized from galaxy seed
 111001: ADD: star count estimation
 111003: FIX: lightspeed limit improved, more physical, from 0.5c
+111005: REM: GoInterstellar on AcviateView REAL_SPACE
+111005: CHG: Interstellar is now have center in (x+0.5,y+0.5) by galaxy coordinates (i.e. not exit point from star system as before)
+111005: ADD: Interstellar center is updated each time player change quadrant
+111005: ADD: Center of map to player
+111005: ADD: Pan of map - W/A/S/D
+111005: CHG: dump of stellar density field to BMP
+
 
 110901: TMP: DeterminedRandomGenerator test printf
 
@@ -152,7 +159,6 @@ DONE:
 + generation of double and multiple stars
 
 TODO
-0 why map in insterstallar is showed with center on position of ship of previous call for map?
 -1 more physics in star systems - HR and so on
 
 -2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
@@ -213,6 +219,7 @@ X - dump galaxy coordinates into log
 F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
 
 CONTROL on map:
+W/A/S/D - pan
 Up/Down - zoom
 Esc - back to RealSpace
 
@@ -504,8 +511,10 @@ class GamePhysics {
 
 		bool IsInterstellar() {return isInterstellar;}
 		vector2d GetGalaxyCoordinatesOfCenter() {return galaxyCoordinatesOfCenter;}
+		vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 
 		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
+		void SetGalaxyQuadrant(vector2ds newQuadrant) {galaxyQuadrant = newQuadrant;}
 		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
 		void SetPlayerShip(PlayerShip* newPlayerShip) {playerShip = newPlayerShip;}
 		void SetTimeSpeed(f64 newSpeed);
@@ -539,6 +548,7 @@ class GamePhysics {
 		PlayerShip* playerShip;
 		core::array<SpaceObject*> listObjects;
 		vector2d galaxyCoordinatesOfCenter;
+		vector2ds galaxyQuadrant;//valid only if isInterstellar 
 };
 
 //ResourceManager - manage game resource
@@ -720,7 +730,7 @@ private:
 class MapObject
 {
 public:
-	void UpdatePosition(f64 mapScale);
+	void UpdatePosition(f64 mapScale, vector2d centerOfMap);
 	void SetNonObjectPosition(vector2d newPositions) {originalObject = 0;nonObjectPosition = newPositions;}
 	void SetNode(SceneNode * node) {sceneNode = node;}
 	void SetOriginal(SpaceObject* object) {originalObject = object;}
@@ -742,11 +752,15 @@ public:
 	void AddObject(SpaceObject* spaceObject);
 	void AddStarMarker(GalaxyStarSystem* starSystem);
 
+	void SetCenter(vector2d newCenter) {centerOfMap = newCenter;}
+
 	f64 cameraDistanceDegree;
 
 	void UpdateCameraDistance();
 
 private:
+	f64 mapScale;
+	vector2d centerOfMap;
 	core::array<MapObject*> MapObjectList;
 };
 
@@ -772,13 +786,15 @@ public:
 	PlayerShip();
 
 	vector2d GetGalaxyCoordinates() {return galaxyCoordinates;}
+	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 
-	void SetGalaxyCoordinates(vector2d newPosition) {galaxyCoordinates = newPosition;}
+	//void SetGalaxyCoordinates(vector2d newPosition) {galaxyCoordinates = newPosition;}
 
 	void UpdateGalaxyCoordinates();
 
 private:
 	vector2d galaxyCoordinates;
+	vector2ds galaxyQuadrant;
 };
 
 //Galaxy - hold main information about whole Galaxy
@@ -800,10 +816,12 @@ public:
 
 private:
 	u32 debugStarCounter;
+	u32 galaxyType;//0 - E0, 1 - E1-E7, 2 - Sp 2 arms, 3 - Sp 3 arms, 4 - Sp 4 arms, 5 - Irr random, 6 - E* two cores
 
 	f64 halfDensityRadius;//10k-17k ly, ~14600 ly for Milky Way
 	f64 maxDensity;//stellar density in the core, should vary from 0.1 to 0.6
 	f64 outerRadius;//beyond that is intergalaxy space
+	f64 minorRadius;//only for elliptical galaxies
 
 	f64 starCountEstimation;// amount of star systems in a galaxy, estimation by stellar density field
 
@@ -2295,8 +2313,11 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_TAB))
+	{
 		//gameRoot->ActivateMap();
 		gameRoot->AcviateView(DG_Game::VIEW_SECTOR_MAP);
+		return; //skip update physics
+	}
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
 	{
@@ -2433,20 +2454,24 @@ void RealSpaceView::Clean()
 //#########################################################################
 //MapObject
 
-void MapObject::UpdatePosition(f64 mapScale)
+void MapObject::UpdatePosition(f64 mapScale, vector2d centerOfMap)
 {
 	if (sceneNode)
 	{
+		vector2d position;
 		if (originalObject)
 		{
-			vector3d position = originalObject->GetPosition();
-			sceneNode->setPosition(vector3df((f32)(position.X*mapScale),(f32)(position.Y*mapScale),0));
+			vector3d pos3d = originalObject->GetPosition();
+			position.X = pos3d.X;
+			position.Y = pos3d.Y;
 		}
 		else
 		{
-			vector2d position = nonObjectPosition*mapScale;
-			sceneNode->setPosition(vector3df((f32)(position.X),(f32)(position.Y),0));
+			position = nonObjectPosition;
 		}
+		position -= centerOfMap;
+		position *= mapScale;
+		sceneNode->setPosition(vector3df((f32)(position.X),(f32)(position.Y),0));
 
 	}
 }
@@ -2523,6 +2548,7 @@ void MapSpaceView::Init()
 	videoDriver = resourceManager->GetVideoDriver();
 	device = resourceManager->GetDevice();
 	eventReceiver = resourceManager->GetEventReceiver();
+	centerOfMap = vector2d(0);
 }
 
 void MapSpaceView::Activate()
@@ -2543,6 +2569,12 @@ void MapSpaceView::Activate()
 	camera->setPosition(vector3df(0,0,-100.f));
 	camera->setFarValue(200.f);
 
+	{
+		vector3d center = gameRoot->GetPlayerShip()->GetPosition();
+		centerOfMap.X = center.X;
+		centerOfMap.Y = center.Y;
+	}
+
 	cameraDistanceDegree = 5500.0;
 	UpdateCameraDistance();
 }
@@ -2554,6 +2586,27 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		gameRoot->CloseView(DG_Game::VIEW_SECTOR_MAP);
 
 	
+	if(eventReceiver->IsKeyDown(irr::KEY_KEY_W))
+	{
+		centerOfMap.Y += 100.0*frameDeltaTime/mapScale;
+		UpdateCameraDistance();
+	}
+	else if(eventReceiver->IsKeyDown(irr::KEY_KEY_S))
+	{
+		centerOfMap.Y -= 100.0*frameDeltaTime/mapScale;
+		UpdateCameraDistance();
+	}
+
+	if(eventReceiver->IsKeyDown(irr::KEY_KEY_A))
+	{
+		centerOfMap.X -= 100.0*frameDeltaTime/mapScale;
+		UpdateCameraDistance();
+	}
+	else if(eventReceiver->IsKeyDown(irr::KEY_KEY_D))
+	{
+		centerOfMap.X += 100.0*frameDeltaTime/mapScale;
+		UpdateCameraDistance();
+	}
 	
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
 		//if (cameraDistanceDegree<8200) //estimated good to see ~10 LY in all directions
@@ -2587,12 +2640,11 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 void MapSpaceView::UpdateCameraDistance()
 {
 	u32 i;
-	f64 mapScale;
 	mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
 	for (i=0;i<MapObjectList.size();i++)
 	{
 		//MapObjectList[i]->UpdatePhysics(time);
-		MapObjectList[i]->UpdatePosition(mapScale);
+		MapObjectList[i]->UpdatePosition(mapScale,centerOfMap);
 	}
 }
 
@@ -2709,6 +2761,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	gamePhysics = new GamePhysics;
 	gamePhysics->globalTime = 0;
 	gamePhysics->SetGalaxyCoordinatesOfCenter(startGalaxyCoord);
+	gamePhysics->SetGalaxyQuadrant(currentStarSystem->GetGalaxyQuadrant());//just in case
 	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS*STAR_SYSTEM_RADIUS*LIGHTYEAR*LIGHTYEAR);
 	gamePhysics->SetTimeSpeed(1.0);
 
@@ -2851,7 +2904,31 @@ void DG_Game::Update() {
 	//Check that player reach border some star system and so this system should be loaded
 	if (gamePhysics->IsInterstellar())
 	{
-		wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
+		if (!gamePhysics->GetGalaxyQuadrant().equals(playerShip->GetGalaxyQuadrant()))
+		{
+		//update center of interstellar on changing quadrants
+			//vector2ds shift = playerShip->GetGalaxyQuadrant()-gamePhysics->GetGalaxyQuadrant();
+			//vector2d shiftPos = vector2d((f64)(shift.X),(f64)(shift.Y));
+			vector2ds quadrant = playerShip->GetGalaxyQuadrant();
+			vector2d playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
+			vector2d quadrantGalaxyCoordinates;
+			vector3d playerLocalPosition;
+
+			quadrantGalaxyCoordinates.X = 0.5+(f64)quadrant.X;
+			quadrantGalaxyCoordinates.Y = 0.5+(f64)quadrant.Y;
+
+			gamePhysics->SetGalaxyCoordinatesOfCenter(quadrantGalaxyCoordinates);
+			gamePhysics->SetGalaxyQuadrant(quadrant);
+
+			playerGalaxyCoordinates-=quadrantGalaxyCoordinates;
+			playerLocalPosition.X = playerGalaxyCoordinates.X*LIGHTYEAR;
+			playerLocalPosition.Y = playerGalaxyCoordinates.Y*LIGHTYEAR;
+			playerLocalPosition.Z = 0;
+
+			playerShip->SetPosition(vector3d(playerLocalPosition));
+		}
+
+		wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates()); //Could be optimized - into scope of update center of interstellar
 
 		//TODO: this is dumb check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
 		GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
@@ -2922,6 +2999,9 @@ void DG_Game::ActivateFTL()
 void DG_Game::GoInterstellar()
 {
 	vector2d playerGalaxyCoordinates;
+	vector2ds quadrant;
+	vector2d quadrantGalaxyCoordinates;
+	vector3d playerLocalPosition;
 	f64 cameraDistance = RealSpace->cameraDistanceDegree;
 
 	currentStarSystem = 0;
@@ -2935,12 +3015,22 @@ void DG_Game::GoInterstellar()
 	resourceManager->SetSceneManager(smgr);
 	resourceManager->MakeBackground();
 	
+	quadrant = playerShip->GetGalaxyQuadrant();
 	playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
 
-	gamePhysics->SetGalaxyCoordinatesOfCenter(playerGalaxyCoordinates);
+	quadrantGalaxyCoordinates.X = 0.5+(f64)quadrant.X;
+	quadrantGalaxyCoordinates.Y = 0.5+(f64)quadrant.Y;
+
+	gamePhysics->SetGalaxyCoordinatesOfCenter(quadrantGalaxyCoordinates);
+	gamePhysics->SetGalaxyQuadrant(quadrant);
 	gamePhysics->GoInterstellar();
 
-	playerShip->SetPosition(vector3d(0));
+	playerGalaxyCoordinates-=quadrantGalaxyCoordinates;
+	playerLocalPosition.X = playerGalaxyCoordinates.X*LIGHTYEAR;
+	playerLocalPosition.Y = playerGalaxyCoordinates.Y*LIGHTYEAR;
+	playerLocalPosition.Z = 0;
+
+	playerShip->SetPosition(vector3d(playerLocalPosition));
 	//wholeGalaxy->AddNearStarSystems(gamePhysics);
 }
 
@@ -2978,6 +3068,7 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	
 	playerRelativeCoordinates = (playerGalaxyCoordinates-nearStarSystemGalaxyCoordinates)*LIGHTYEAR;
 	gamePhysics->SetGalaxyCoordinatesOfCenter(nearStarSystemGalaxyCoordinates);
+	gamePhysics->SetGalaxyQuadrant(vector2ds((s32)floor(nearStarSystemGalaxyCoordinates.X),(s32)floor(nearStarSystemGalaxyCoordinates.Y)));//just in case
 	playerShip->SetPosition(vector3d(playerRelativeCoordinates.X,playerRelativeCoordinates.Y,0));
 
 	//wholeGalaxy->AddNearStarSystems(gamePhysics);
@@ -2990,10 +3081,10 @@ void DG_Game::InternalAcviateView(ViewType newView)
 	case VIEW_NONE:
 		break;
 	case VIEW_REALSPACE:
-		if (gamePhysics->IsInterstellar())
+		/*if (gamePhysics->IsInterstellar())
 		{
 			GoInterstellar();
-		}
+		}*/
 		RealSpace->Activate();
 		activeView = RealSpace;
 		break;
@@ -3073,6 +3164,8 @@ void PlayerShip::UpdateGalaxyCoordinates()
 	galaxyCoordinates = physics->GetGalaxyCoordinatesOfCenter();
 	galaxyCoordinates.X += position.X / LIGHTYEAR;
 	galaxyCoordinates.Y += position.Y / LIGHTYEAR;
+	galaxyQuadrant.X = (s32)floor(galaxyCoordinates.X);
+	galaxyQuadrant.Y = (s32)floor(galaxyCoordinates.Y);
 }
 
 //#########################################################################
@@ -3084,6 +3177,7 @@ void Galaxy::Init()
 
 	//TEMP
 	galaxySeed[0]=0x10;
+	//galaxySeed[0]=0x11;
 	galaxySeed[1]=0x12;
 	galaxySeed[2]=0x17;
 	galaxySeed[3]=0xF0;
@@ -3102,8 +3196,11 @@ void Galaxy::Init()
 
 	s32 x,y;
 	s32 number;
+	f64 eccentricity;
+	f64 rotationAngle;
 	f64 stellarDensity1;
 	f64 densityKoeff;
+	f64 len2,fi;
 	starCountEstimation=0;
 	vector2d coords;
 
@@ -3119,6 +3216,26 @@ void Galaxy::Init()
 			break;
 	}
 
+	number = galaxyRNG->GenerateByte();
+	//77% - spiral
+	//20% - elliptical
+	//3% - irregular
+	if (number>70)
+	{//27%
+		number = galaxyRNG->GenerateByte();
+		eccentricity = (0.3+number*0.00235);//0.3 - 0.9, as ~1.0 not needed
+		//eccentricity = 0.1;
+		minorRadius = outerRadius*eccentricity;
+		number = galaxyRNG->GenerateByte();
+		rotationAngle = number*TWO_PI/255.0;
+		//rotationAngle  = 2.5;
+		galaxyType = 1;//E1-E7
+	}
+	else
+	{
+		galaxyType = 0;//E0
+	}
+
 	densityKoeff = -1.0/(halfDensityRadius*halfDensityRadius);
 
 	//Generate stellar density field, which will be used later for generation of stars
@@ -3128,8 +3245,22 @@ void Galaxy::Init()
 		coords.X = x*64-65504;//-65504 = -65536+32
 		coords.Y = y*64-65504;
 
-		//Calc star density, v1 elliptical (E0) galaxy - no spiral arms at all
-		stellarDensity1 = maxDensity*exp(densityKoeff*coords.getLengthSQ()); //gives half-height on ~12000 ly;
+		if (galaxyType==0)
+		{
+			//Calc star density, v1 elliptical (E0) galaxy - no spiral arms at all
+			stellarDensity1 = maxDensity*exp(densityKoeff*coords.getLengthSQ());
+		}
+		if (galaxyType==1)
+		{
+			//Calc star density, v2 elliptical (E1-E7) galaxy
+			fi = atan2(coords.Y,coords.X)-rotationAngle;
+			//len2 = coords.X*coords.X+coords.Y*coords.Y/(eccentricity*eccentricity);
+			//len2 = eccentricity*eccentricity/(eccentricity*eccentricity*cos(fi)*cos(fi)+sin(fi)*sin(fi));
+			//len2=coords.getLengthSQ()/len2;
+			len2 = coords.getLengthSQ()*(eccentricity*eccentricity*cos(fi)*cos(fi)+sin(fi)*sin(fi))/(eccentricity*eccentricity);
+
+			stellarDensity1 = maxDensity*exp(densityKoeff*len2); 
+		}
 		if (stellarDensity1<INTERGALACTIC_STARS_DENSITY)
 			stellarDensity1 = INTERGALACTIC_STARS_DENSITY;
 		
@@ -3298,7 +3429,19 @@ void Galaxy::DebugDump()
 	s32 x,y;
 	//s32 count;
 	u8 byte;
-	FILE * f1 = fopen("galaxy.raw","wb");
+	u8 header[53] = {0x42,0x4D,0x38,0x04,0x40,0x00,0x00,0x00,0x00,0x00,0x36,0x04,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x08,0x00,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x40,0x00,0x12,0x0B,0x00,0x00,0x12,0x0B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+	FILE * f1 = fopen("galaxy.bmp","wb");
+
+	fwrite(header,1,53,f1);//BMP header
+	for (x=0;x<256;x++)
+	{//palette
+		byte = 0;
+		fwrite(&byte,1,1,f1);
+		byte = x;
+		fwrite(&byte,1,1,f1);
+		fwrite(&byte,1,1,f1);
+		fwrite(&byte,1,1,f1);
+	}
 
 	for (y=0;y<2048;y++)
 	{
@@ -3306,7 +3449,7 @@ void Galaxy::DebugDump()
 		//for (coord0.X=53376;coord0.X<65536;coord0.X+=64)
 		{
 			//byte=(u8)(stellarDensity[x][y]*500.0);
-			byte=(u8)(255-log(stellarDensity[x][y])*15.0);
+			byte=(u8)(log(stellarDensity[x][y])*15.0);
 			fwrite(&byte,1,1,f1);
 		}
 	}
@@ -3437,6 +3580,7 @@ void GalaxyStarSystem::GenerateStar()
 	x = starRNG->GetByteByOffset(20)+starRNG->GetByteByOffset(21)*256;
 	y = starRNG->GetByteByOffset(22)+starRNG->GetByteByOffset(23)*256;
 
+	//TODO: this is uniform distribution among whole quadrant, but what if two systems will be very close in adjanced quadrants?
 	galaxyCoordinates.X = galaxyQuadrant.X+x/65536.0;
 	galaxyCoordinates.Y = galaxyQuadrant.Y+y/65536.0;
 }
