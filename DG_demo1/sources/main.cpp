@@ -129,6 +129,12 @@ coding demo1:
 111005: ADD: Center of map to player
 111005: ADD: Pan of map - W/A/S/D
 111005: CHG: dump of stellar density field to BMP
+111008: ADD: sizes of objects on map (lead to escaping of labels)
+111008: CHG: labels on map now below marker
+111008: FIX: scenenode remains after jump to FTL (GoInterstellar was not called)
+111008: ADD: galaxy texture on map, fades on star-system scale
+111009: ADD: spiral galaxy (still testing)
+111009: FIX: u64 for non-Windows
 
 
 110901: TMP: DeterminedRandomGenerator test printf
@@ -283,7 +289,13 @@ using namespace irr;
 
 //types
 typedef core::stringw   text_string;
+
+#ifdef _MSC_VER
 typedef unsigned __int64	u64;
+#else
+#include <stdint.h>
+typedef uint64_t u64;
+#endif
 
 //Irrlicht works in float, so f32
 //DangerGalaxy works in double, so f64
@@ -431,6 +443,7 @@ class SpaceObject {
 		//f32 GetMaxThrust() {return maxThrust;}
 		//f32 GetMaxRotationThrust() {return maxRotationThrust;}
 		f64 GetMaxFTLGravity() {return maxFTLGravity;}
+		f64 GetRaduis() {return geometryRadius;}
 
 		SceneNode* GetNode() {return sceneNode;}
 
@@ -446,6 +459,7 @@ class SpaceObject {
 		void SetMaxThrust(f64 newMaxThrust, f64 newMaxRotationThrust) {maxThrust = newMaxThrust; maxRotationThrust = newMaxRotationThrust; }
 		void SetMass(f64 newMass) {mass = newMass;}
 		void SetMassRadius(f64 newMassRadius) {gravityMinRadius = newMassRadius;}
+		void SetRadius(f64 newRadius) {geometryRadius = newRadius;}
 		void SetGravity(bool emit, bool affected) {isEmitGravity = emit,isAffectedByGravity = affected;}
 		void SetName(text_string newName) {name = newName;}
 		void SetMaxFTLGravity(f64 newGravity) {maxFTLGravity = newGravity;}
@@ -477,6 +491,7 @@ class SpaceObject {
 		text_string name;
 
 		f64 mass;//for calc gravity
+		f64 geometryRadius;//for map marker and so on
 		f64 gravityMinRadius;//only for calc gravity
 		f64 maxThrust;
 		f64 maxRotationThrust;
@@ -730,14 +745,20 @@ private:
 class MapObject
 {
 public:
+	MapObject();
 	void UpdatePosition(f64 mapScale, vector2d centerOfMap);
 	void SetNonObjectPosition(vector2d newPositions) {originalObject = 0;nonObjectPosition = newPositions;}
 	void SetNode(SceneNode * node) {sceneNode = node;}
 	void SetOriginal(SpaceObject* object) {originalObject = object;}
+	void SetSizes(f64 newSizeReal, f64 newSizeMinimal) {sizeReal = newSizeReal; sizeMinimal = newSizeMinimal;}
+	void SetScaleLimits(f64 newLowLimit) {lowScaleLimit = newLowLimit;}
 
 private:
 	SpaceObject* originalObject;
 	vector2d nonObjectPosition; //in case of originalObject=0
+	f64 sizeReal;//physical size of object, for detailed zooms
+	f64 sizeMinimal;//in case of very far distance
+	f64 lowScaleLimit;//fabe objects if it too big
 	SceneNode* sceneNode; //Irrlich renderable object
 };
 
@@ -751,6 +772,8 @@ public:
 	void Close();
 	void AddObject(SpaceObject* spaceObject);
 	void AddStarMarker(GalaxyStarSystem* starSystem);
+
+	void AddGalaxy(vector2d galaxyPosition);
 
 	void SetCenter(vector2d newCenter) {centerOfMap = newCenter;}
 
@@ -810,7 +833,8 @@ public:
 	GalaxyStarSystem* GetStartStarSystem(); //Get star system of player start
 	void UpdatePlayerLocation(vector2d coordinates);//For updating cache of stars
 
-	void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
+	//void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
+	void SaveMapTexture();
 
 	GalaxyStarSystem* DebugJump();
 
@@ -1098,6 +1122,7 @@ SpaceObject::SpaceObject()
 	isVisibleToPlayer = false;
 	mass = 0;
 	gravityMinRadius = 1.0;
+	geometryRadius = 0.0;
 	orbitingObject = 0;
 	orbitalRadius = 1.0;
 	orbitalPeriod = 1.0;
@@ -1897,6 +1922,7 @@ SpaceObject* ResourceManager::MakeStar(f64 radius, s32 polygons)
 	newStar->SetNode(sceneNode);
 	newStar->SetMotionType(SpaceObject::MOTION_NONE);
 	newStar->SetMassRadius(radius);
+	newStar->SetRadius(radius);
 	//planetOne->SetOrbitalParams(0,200,300,0);
 	physics->AddObject(newStar);
 
@@ -1980,6 +2006,7 @@ SpaceObject* ResourceManager::MakePlanet(f64 radius, s32 polygons)
 	}
 	newPlanet->SetNode(sceneNode);
 	newPlanet->SetMassRadius(radius);
+	newPlanet->SetRadius(radius);
 	//planetOne->SetMotionType(SpaceObject::MOTION_NONE);
 	//newPlanet->SetOrbitalParams(0,200,300,0);
 
@@ -2016,6 +2043,7 @@ SpaceObject* ResourceManager::MakeShip()
 	ship->SetMotionType(SpaceObject::MOTION_NAVIGATION);
 
 	ship->SetGravity(false,true);
+	ship->SetRadius(1.0);
 	physics->AddObject(ship);
 
 	LoadNodesForShip(ship);
@@ -2348,10 +2376,11 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 	}
 
+	/*
 	if (eventReceiver->IsKeyDown(irr::KEY_KEY_Q))
 	{
 		gameRoot->GetGalaxy()->DebugDump();
-	}
+	}*/
 
 	//playerShip->thrustPower = thrust*MOVEMENT_SPEED*5.f;
 	//playerShip->rotationSpeed = rotate;
@@ -2454,11 +2483,22 @@ void RealSpaceView::Clean()
 //#########################################################################
 //MapObject
 
+MapObject::MapObject()
+{
+	lowScaleLimit = 0;
+	nonObjectPosition = vector2d(0);
+	sceneNode = 0;
+	originalObject = 0;
+	sizeMinimal = 0;
+	sizeReal = 1.0;
+}
+
 void MapObject::UpdatePosition(f64 mapScale, vector2d centerOfMap)
 {
 	if (sceneNode)
 	{
 		vector2d position;
+		f64 size;
 		if (originalObject)
 		{
 			vector3d pos3d = originalObject->GetPosition();
@@ -2471,8 +2511,19 @@ void MapObject::UpdatePosition(f64 mapScale, vector2d centerOfMap)
 		}
 		position -= centerOfMap;
 		position *= mapScale;
-		sceneNode->setPosition(vector3df((f32)(position.X),(f32)(position.Y),0));
+		size = sizeReal*mapScale;
+		if (size<sizeMinimal) size = sizeMinimal;
 
+		sceneNode->setPosition(vector3df((f32)(position.X),(f32)(position.Y),0));
+		sceneNode->setScale(vector3df((f32)(size)));
+
+		if (lowScaleLimit!=0)
+		{
+			u32 alpha = 255;
+			if (size>lowScaleLimit)
+				alpha = (u32)(255.0*lowScaleLimit/size);
+			sceneNode->getMaterial(0).EmissiveColor.set(255,alpha,alpha,alpha);
+		}
 	}
 }
 
@@ -2499,12 +2550,14 @@ void MapSpaceView::AddObject(SpaceObject* spaceObject)
 	//SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,label.c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
 	
 	//getDimension(
-	sceneNode3->setPosition(vector3df(labelSize.Width*0.12f,1.0f,0));
+	//sceneNode3->setPosition(vector3df(labelSize.Width*0.12f,1.0f,0));
+	sceneNode3->setPosition(vector3df(0,-1.0f,0));
 	//sceneNode3->setPosition(sceneNode3->getScale());
 
 	MapObject* newMapObject = new MapObject();
 	newMapObject->SetNode(sceneNode2);
 	newMapObject->SetOriginal(spaceObject);
+	newMapObject->SetSizes(2.0*spaceObject->GetRaduis(),1.0);
 	MapObjectList.push_back(newMapObject);
 }
 
@@ -2532,12 +2585,64 @@ void MapSpaceView::AddStarMarker(GalaxyStarSystem* starSystem)
 	//SceneNode* sceneNode3 = sceneManager->addBillboardTextSceneNode(0,label.c_str(),sceneNode2,core::dimension2d<f32>(10.f,2.0f));
 	
 	//getDimension(
-	sceneNode3->setPosition(vector3df(labelSize.Width*0.12f,1.0f,0));
+	//sceneNode3->setPosition(vector3df(labelSize.Width*0.12f,1.0f,0));
+	sceneNode3->setPosition(vector3df(0,-1.0f,0));
 	//sceneNode3->setPosition(sceneNode3->getScale());
 
 	MapObject* newMapObject = new MapObject();
 	newMapObject->SetNode(sceneNode2);
 	newMapObject->SetNonObjectPosition(position);
+	newMapObject->SetSizes(1e6,1.0);//~1 lighthour, ~6.6 AU, ~720 solar raduises
+	MapObjectList.push_back(newMapObject);
+}
+
+void MapSpaceView::AddGalaxy(vector2d galaxyPosition)
+{
+	//TODO: add non-object marker
+	SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+	if (sceneNode2)
+	{
+		sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+		//sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL );
+		//sceneNode2->setMaterialType(video::EMT_SOLID );
+		//sceneNode2->setMaterialType(video::EMT_ONETEXTURE_BLEND);
+		//sceneNode2->setMaterialFlag(video::EMF_LIGHTING, true);
+		//sceneNode2->getMaterial(0).DiffuseColor.set(255,0,0,0);
+		//sceneNode2->getMaterial(0).setFlag(video::E_MATERIAL_FLAG::
+
+		sceneNode2->setMaterialTexture(0, videoDriver->getTexture("galaxy.bmp"));
+
+		//this->sceneManager->registerNodeForRendering(sceneNode2,scene::ESNRP_TRANSPARENT );
+
+		/*
+		for (u32 i=0;i<sceneNode2->getMaterialCount();i++)
+		{
+			//sceneNode2->setMaterialType(video::EMT_ONETEXTURE_BLEND );
+			//sceneNode2->getMaterial(i).MaterialType = video::EMT_ONETEXTURE_BLEND;
+			//sceneNode2->getMaterial(0).MaterialTypeParam = irr::video::pack_texureBlendFunc(irr::video::EBF_SRC_ALPHA, irr::video::EBF_DST_ALPHA);
+			//sceneNode2->getMaterial(0).MaterialTypeParam = irr::video::pack_texureBlendFunc(irr::video::EBF_ONE, irr::video::EBF_ONE);
+			//sceneNode2->getMaterial(i).MaterialTypeParam = irr::video::pack_texureBlendFunc( video::EBF_SRC_ALPHA, video::EBF_ONE_MINUS_SRC_ALPHA, video::EMFN_MODULATE_1X );
+			//sceneNode2->getMaterial(i).AmbientColor.set(128,255,0,255);
+			//sceneNode2->getMaterial(i).DiffuseColor.set(128,255,0,255);
+			//sceneNode2->getMaterial(i).Lighting = true;
+			//sceneNode2->getMaterial(i).ZWriteEnable = true;
+			//sceneNode2->getMaterial(i).DiffuseColor.setAlpha(32);
+		}*/
+		sceneNode2->getMaterial(0).EmissiveColor.set(255,64,64,64);
+
+
+		//video::ITexture * text2 = videoDriver->getTexture("galaxy.bmp");
+		//video::ECOLOR_FORMAT cf = text2->getColorFormat();
+		//sceneNode2->setMaterialTexture(0, text2);
+
+		//TODO: direct creation of texture from stellar density
+	}
+
+	MapObject* newMapObject = new MapObject();
+	newMapObject->SetNode(sceneNode2);
+	newMapObject->SetNonObjectPosition(-galaxyPosition*LIGHTYEAR);
+	newMapObject->SetSizes(LIGHTYEAR*131072,1.0);//
+	newMapObject->SetScaleLimits(200000);
 	MapObjectList.push_back(newMapObject);
 }
 
@@ -2563,6 +2668,8 @@ void MapSpaceView::Activate()
 
 	gameRoot->GetGalaxy()->AddNearStarSystems(this);
 
+	AddGalaxy(gamePhysics->GetGalaxyCoordinatesOfCenter());
+
 	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
 	camera->setFOV(.7f);
 	camera->setTarget(vector3df(0,0,0));
@@ -2575,7 +2682,8 @@ void MapSpaceView::Activate()
 		centerOfMap.Y = center.Y;
 	}
 
-	cameraDistanceDegree = 5500.0;
+	//cameraDistanceDegree = 5500.0;
+	cameraDistanceDegree = 11000.0;
 	UpdateCameraDistance();
 }
 
@@ -2780,7 +2888,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	//IrrlichtDevice* device = createDevice(driverType,
 	device = createDevice(video::EDT_OPENGL,
-			core::dimension2d<u32>(1024, 768), 16, false, false, false, receiver);
+			core::dimension2d<u32>(1024, 768), 32, false, false, false, receiver);
 
 	if (device == 0)
 		return 1; // could not create selected driver.
@@ -2789,6 +2897,9 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	smgr = device->getSceneManager();
 	gameMode  = 0;
 
+	//driver->setTextureCreationFlag(irr::video::ETCF_ALWAYS_32_BIT,true);
+
+	video::ECOLOR_FORMAT cf2 =  driver->getColorFormat();
 
 	RealSpace = new RealSpaceView();
 	RealSpace->SetRoot(this);
@@ -2808,6 +2919,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	playerShip->SetMaxThrust(100000,150);
 	playerShip->SetName(L"Player");
 	playerShip->SetMaxFTLGravity(0.003138);
+	playerShip->SetRadius(0.5);
 	//acceleration = 0.003138 <=> gravity = -5.75 "dgr"
 
 
@@ -2897,8 +3009,8 @@ void DG_Game::Update() {
 		}
 		gamePhysics->GoInterstellar();
 
-		if (IsViewActive(VIEW_REALSPACE))
-			GoInterstellar();
+		//if (IsViewActive(VIEW_REALSPACE))
+		GoInterstellar();
 	}
 
 	//Check that player reach border some star system and so this system should be loaded
@@ -3200,9 +3312,17 @@ void Galaxy::Init()
 	f64 rotationAngle;
 	f64 stellarDensity1;
 	f64 densityKoeff;
-	f64 len2,fi;
+	f64 len2,fi,dist,angleDist;
+
+	//for spiral galaxies
+	f64 spiralityB;
+	f64 armKoef;//1.0 for 2 arms, 1.5 for 3 arms, 2.0 for 4 arms
+	f64 armWidth;
+	f64 pitchAngle;//in radians
+
 	starCountEstimation=0;
 	vector2d coords;
+	vector2d coordsArm;
 
 	for (;;)
 	{
@@ -3236,6 +3356,13 @@ void Galaxy::Init()
 		galaxyType = 0;//E0
 	}
 
+	galaxyType = 2;//Sa-Sc
+	spiralityB = -0.16;
+	armKoef = 1.0;
+	armWidth = 5000.0;
+
+	pitchAngle = atan(abs(1.0/spiralityB));
+ 
 	densityKoeff = -1.0/(halfDensityRadius*halfDensityRadius);
 
 	//Generate stellar density field, which will be used later for generation of stars
@@ -3261,6 +3388,41 @@ void Galaxy::Init()
 
 			stellarDensity1 = maxDensity*exp(densityKoeff*len2); 
 		}
+		if (galaxyType==2)
+		{
+			/*
+			stellarDensity1 = exp(densityKoeff*coords.getLengthSQ());
+			dist = coords.getLength();
+			fi = rotationAngle + log(dist)/0.2;
+			coordsArm.X = dist*cos(fi);
+			coordsArm.Y = dist*sin(fi);
+			coordsArm-=coords;
+			dist = coordsArm.getLengthSQ();
+			if (dist>1e8) dist = 1e8;
+			stellarDensity1 *= 1.0 - dist*0.9e-8;
+			stellarDensity1 *= maxDensity;
+			*/
+
+			stellarDensity1 = exp(densityKoeff*coords.getLengthSQ());
+			dist = coords.getLength();
+			fi = atan2(coords.Y,coords.X)-rotationAngle;
+			angleDist = log(dist)/spiralityB - fi;
+			/*
+			angleDist = angleDist/TWO_PI;
+			angleDist -= floor(angleDist);
+			angleDist *= TWO_PI;
+			//angleDist = abs(angleDist-3.1415);
+			//if (angleDist>0.3) angleDist=0.3;
+			//stellarDensity1 *= 1.0 - angleDist*3;
+			angleDist = abs(angleDist-3.1415)*dist;
+			*/
+			angleDist  = abs(sin(angleDist*armKoef))*dist/armWidth;
+
+			if (angleDist>1.0) angleDist=1.0;
+			stellarDensity1 *= 1.0 - angleDist*0.9;
+			stellarDensity1 *= maxDensity;
+		}
+
 		if (stellarDensity1<INTERGALACTIC_STARS_DENSITY)
 			stellarDensity1 = INTERGALACTIC_STARS_DENSITY;
 		
@@ -3268,6 +3430,7 @@ void Galaxy::Init()
 		starCountEstimation+=stellarDensity1*4096.0;//4096 = 64*64 ly
 	}
 
+	SaveMapTexture();
 	wprintf(L"DG: Galaxy generated, ~%.0f star systems\r\n",starCountEstimation);
 
 	UpdateKnownStars();
@@ -3423,14 +3586,25 @@ GalaxyStarSystem* Galaxy::GetStartStarSystem()
 	return minDistanceObject;
 }
 
-void Galaxy::DebugDump()
+//void Galaxy::DebugDump()
+void Galaxy::SaveMapTexture()
 {
 	//vector2ds coord1,coord0,coord;
 	s32 x,y;
 	//s32 count;
 	u8 byte;
+	FILE * f1;
 	u8 header[53] = {0x42,0x4D,0x38,0x04,0x40,0x00,0x00,0x00,0x00,0x00,0x36,0x04,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x08,0x00,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x40,0x00,0x12,0x0B,0x00,0x00,0x12,0x0B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-	FILE * f1 = fopen("galaxy.bmp","wb");
+
+	/*
+	f1 = fopen("galaxy.bmp","rb");
+	if (f1!=0)
+	{
+		fclose(f1);
+		return;
+	}*/
+
+	f1 = fopen("galaxy.bmp","wb");
 
 	fwrite(header,1,53,f1);//BMP header
 	for (x=0;x<256;x++)
@@ -3448,8 +3622,9 @@ void Galaxy::DebugDump()
 		for (x=0;x<2048;x++)
 		//for (coord0.X=53376;coord0.X<65536;coord0.X+=64)
 		{
-			//byte=(u8)(stellarDensity[x][y]*500.0);
-			byte=(u8)(log(stellarDensity[x][y])*15.0);
+			byte=(u8)(pow((f64)stellarDensity[x][y],0.4)*255.0);
+			//byte=(u8)(236+log(stellarDensity[x][y])*15.0);
+			//byte=(u8)(255-pow((f64)log(stellarDensity[x][y]),2.0));
 			fwrite(&byte,1,1,f1);
 		}
 	}
@@ -3748,7 +3923,7 @@ void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 m
 		componentIndex++;
 
 		//DEBUG INFO
-		wprintf(L" Star %ws\r\n",star->GetName());
+		wprintf(L" Star %ws\r\n",star->GetName().c_str());
 
 
 		number = starRNG->GenerateByte();
@@ -4558,7 +4733,6 @@ u8 UndeterminedRandomGenerator::GenerateByte()
 //write <len> bytes 
 void UndeterminedRandomGenerator::GenerateBytes(u8* destination, u32 len)
 {
-	//TODO: !!!
 	u32 i;
 	for (i=0;i<len;i++)
 	{	//NOT OPTIMIZED
