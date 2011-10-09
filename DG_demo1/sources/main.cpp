@@ -135,6 +135,10 @@ coding demo1:
 111008: ADD: galaxy texture on map, fades on star-system scale
 111009: ADD: spiral galaxy (still testing)
 111009: FIX: u64 for non-Windows
+111009: ADD: 1000fps limit
+111009: ADD: huge zooms of RealSpace (up to 1 ly)
+111009: FIX: galaxy texture balanced creation (from density)
+111009: ADD: nice spiral arms
 
 
 110901: TMP: DeterminedRandomGenerator test printf
@@ -285,6 +289,8 @@ using namespace irr;
 //Limits low FPS and slowdowns game if lower
 //0.02 gives 50 fps
 #define FRAME_TIME_MAX 0.02
+
+#define FRAME_TIME_MIN 0.001
 
 
 //types
@@ -2092,7 +2098,7 @@ void ResourceManager::AddMarker(SpaceObject* toObject, u32 type)
 		}
 		else
 		{
-			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
+			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star1.bmp"));
 			sizeMarker  = .07;
 		}
 	}
@@ -2419,7 +2425,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	}
 
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
-		if (cameraDistanceDegree<4000)
+		if (cameraDistanceDegree<6500)
 		{
 			cameraDistanceDegree+=frameDeltaTime*2000.0;
 			//cameraDistance *= 1.f*(1.f+frameDeltaTime);
@@ -2468,6 +2474,7 @@ void RealSpaceView::UpdateCameraDistance()
 	//f32 camreDistance;
 	cameraDistance = 30.0*exp(cameraDistanceDegree*0.003);
 	camera->setFarValue((f32)(cameraDistance*2.0));
+	camera->setNearValue((f32)(cameraDistance*0.5));
 	gamePhysics->UpdateMarkers(cameraDistance);
 
 	camera->setPosition(vector3df(0,0,-(f32)cameraDistance));//update camera look-from point
@@ -2539,7 +2546,7 @@ void MapSpaceView::AddObject(SpaceObject* spaceObject)
 	{
 		sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
 		sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
-		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
+		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star1.bmp"));
 		//sizeMarker  = .07;
 		sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
 	}
@@ -2574,7 +2581,7 @@ void MapSpaceView::AddStarMarker(GalaxyStarSystem* starSystem)
 	{
 		sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
 		sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
-		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star2.bmp"));
+		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star1.bmp"));
 		//sizeMarker  = .07;
 		//sceneNode2->setPosition(vector3df((f32)(position.X*.000001*LIGHTYEAR),(f32)(position.Y*.000001*LIGHTYEAR),0));
 	}
@@ -2988,7 +2995,15 @@ void DG_Game::Update() {
 
 	// Work out a frame delta time.
 	const u32 now = device->getTimer()->getTime();
-	f64 frameDeltaTime = (f64)(now - then) / 1000.0; // Time in seconds
+	f64 frameDeltaTime = (f64)(now - then) * 0.001; // Time in seconds
+	
+	if (frameDeltaTime<FRAME_TIME_MIN)
+	{
+		device->sleep(1);
+		return;
+	}
+
+
 	then = now;
 
 	if (frameDeltaTime>FRAME_TIME_MAX) frameDeltaTime = FRAME_TIME_MAX;//50 fps minimum, or slowdown game
@@ -3318,6 +3333,7 @@ void Galaxy::Init()
 	f64 spiralityB;
 	f64 armKoef;//1.0 for 2 arms, 1.5 for 3 arms, 2.0 for 4 arms
 	f64 armWidth;
+	f64 armDist1,armDistK;
 	f64 pitchAngle;//in radians
 
 	starCountEstimation=0;
@@ -3357,11 +3373,14 @@ void Galaxy::Init()
 	}
 
 	galaxyType = 2;//Sa-Sc
-	spiralityB = -0.16;
-	armKoef = 1.0;
-	armWidth = 5000.0;
+	spiralityB = 0.15;//positive -> going from center to edge is CCW, negative -> CW
+	armKoef = 1.0;//2 arms
+	armWidth = 1000.0;
+	pitchAngle = TWO_PI*0.25-atan(abs(1.0/spiralityB));
+	armWidth = armWidth/sin(pitchAngle);
+	//armDist0 = halfDensityRadius*.2;//inside this radius is only a core
+	armDist1 = halfDensityRadius*.5;
 
-	pitchAngle = atan(abs(1.0/spiralityB));
  
 	densityKoeff = -1.0/(halfDensityRadius*halfDensityRadius);
 
@@ -3403,10 +3422,18 @@ void Galaxy::Init()
 			stellarDensity1 *= maxDensity;
 			*/
 
-			stellarDensity1 = exp(densityKoeff*coords.getLengthSQ());
+			stellarDensity1 = maxDensity*exp(densityKoeff*coords.getLengthSQ());
 			dist = coords.getLength();
-			fi = atan2(coords.Y,coords.X)-rotationAngle;
-			angleDist = log(dist)/spiralityB - fi;
+			//fi = atan2(coords.Y,coords.X)-rotationAngle;
+			//angleDist = log(dist)/spiralityB - fi;
+
+			//Angle distance (in radians) between logarithmic spiral and current quadrant, incl. rotation
+			angleDist = log(dist)/spiralityB - atan2(coords.Y,coords.X) - rotationAngle;
+
+			//Koeff of arms/core transfer function
+			//1.0 for arms, 0.0 for core
+			armDistK = 1.0/(1.0+exp(5.0*(1.0-dist/armDist1)));
+
 			/*
 			angleDist = angleDist/TWO_PI;
 			angleDist -= floor(angleDist);
@@ -3416,11 +3443,12 @@ void Galaxy::Init()
 			//stellarDensity1 *= 1.0 - angleDist*3;
 			angleDist = abs(angleDist-3.1415)*dist;
 			*/
-			angleDist  = abs(sin(angleDist*armKoef))*dist/armWidth;
 
-			if (angleDist>1.0) angleDist=1.0;
-			stellarDensity1 *= 1.0 - angleDist*0.9;
-			stellarDensity1 *= maxDensity;
+			//Linear distance from spiral arm to current quadrant
+			//sin() + armKoef defines number of arms, armWidth - width of an arm
+			angleDist = sin(angleDist*armKoef)*dist/armWidth;
+
+			stellarDensity1 *= (1.0-armDistK)+armDistK/(1.0+angleDist*angleDist);
 		}
 
 		if (stellarDensity1<INTERGALACTIC_STARS_DENSITY)
@@ -3429,6 +3457,8 @@ void Galaxy::Init()
 		stellarDensity[x][y]=(f32)stellarDensity1;
 		starCountEstimation+=stellarDensity1*4096.0;//4096 = 64*64 ly
 	}
+
+	stellarDensity[0][0]=maxDensity;
 
 	SaveMapTexture();
 	wprintf(L"DG: Galaxy generated, ~%.0f star systems\r\n",starCountEstimation);
@@ -3594,7 +3624,7 @@ void Galaxy::SaveMapTexture()
 	//s32 count;
 	u8 byte;
 	FILE * f1;
-	u8 header[53] = {0x42,0x4D,0x38,0x04,0x40,0x00,0x00,0x00,0x00,0x00,0x36,0x04,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x08,0x00,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x40,0x00,0x12,0x0B,0x00,0x00,0x12,0x0B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+	u8 header[54] = {0x42,0x4D,0x38,0x04,0x40,0x00,0x00,0x00,0x00,0x00,0x36,0x04,0x00,0x00,0x28,0x00,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x08,0x00,0x00,0x01,0x00,0x08,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x40,0x00,0x12,0x0B,0x00,0x00,0x12,0x0B,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
 
 	/*
 	f1 = fopen("galaxy.bmp","rb");
@@ -3606,24 +3636,27 @@ void Galaxy::SaveMapTexture()
 
 	f1 = fopen("galaxy.bmp","wb");
 
-	fwrite(header,1,53,f1);//BMP header
+	fwrite(header,1,54,f1);//BMP header
 	for (x=0;x<256;x++)
 	{//palette
-		byte = 0;
-		fwrite(&byte,1,1,f1);
 		byte = x;
 		fwrite(&byte,1,1,f1);
 		fwrite(&byte,1,1,f1);
 		fwrite(&byte,1,1,f1);
+		byte = 0;
+		fwrite(&byte,1,1,f1);
 	}
 
+	//lines are inverted in BMP and so inverted Y axis in galaxy
 	for (y=0;y<2048;y++)
 	{
 		for (x=0;x<2048;x++)
 		//for (coord0.X=53376;coord0.X<65536;coord0.X+=64)
 		{
-			byte=(u8)(pow((f64)stellarDensity[x][y],0.4)*255.0);
-			//byte=(u8)(236+log(stellarDensity[x][y])*15.0);
+			//byte=(u8)(pow(((f64)stellarDensity[x][y])/maxDensity,0.4)*255.0);//power 0.4, balanced for high and med density
+			//byte=(u8)(236+log(stellarDensity[x][y])*15.0);//logarithmic, good for viewing least dense regions
+			byte=(u8)(63+log(stellarDensity[x][y])*4.0+pow(((f64)stellarDensity[x][y])/maxDensity,0.4)*194.0);//balanced log-pow, looks good for all densities
+
 			//byte=(u8)(255-pow((f64)log(stellarDensity[x][y]),2.0));
 			fwrite(&byte,1,1,f1);
 		}
@@ -4784,27 +4817,51 @@ void UndeterminedRandomGenerator::RehashBlock()
 
 int main(int ArgumentCount, char **Arguments) {
 
-	DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();
-	//UndeterminedRandomGenerator* pRNG = new UndeterminedRandomGenerator();
-	u8 test[32];
+	for (;;)
+	{
+		DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();
+		//UndeterminedRandomGenerator* pRNG = new UndeterminedRandomGenerator();
+		u8 testSeed[32]={0x69,0x55,0xF1,0x14, 0xED,0xFE,0x58,0x45, 0xA9,0x21,0x30,0x61, 0x95,0x19,0x21,0x32,
+			0x4D,0xD8,0x71,0xB5, 0xB9,0x76,0xEC,0x03, 0x29,0xAD,0xCC,0x3B, 0xC2,0xF1,0xE2,0x07};
+		//u8 testSeed[32];//={0x11,0x12,0x23,0x;
+		u8 testVector1[16]={0xED,0x4B,0x97,0x67,0x02,0xC1,0x47,0x24,0x9E,0x89,0xF3,0xB7,0x1D,0x28,0x21,0xC9};
+		u8 testVector2[16]={0x36,0x45,0xFA,0x99,0x68,0xDC,0xEB,0x49,0x7E,0xC3,0x1E,0xCC,0x0C,0x01,0x68,0x93};
+		u8 testOut1[16],testOut2[16];
 
-	for (u32 i=0;i<32;i++)
-		test[i]=11;
-	pRNG->SetSeedWithCoordinates(test,32,1,1);
+		//for (u32 i=0;i<32;i++)
+		//	testSeed[i]=11;
+		pRNG->SetSeedWithCoordinates(testSeed,32,1,1);
+		//pRNG->AddSeed(testSeed,32);
 
-	printf("seed (1,1) from 0 v1:");
-	for (u32 i=0;i<100;i++)
-		printf("%02X",pRNG->GenerateByte());
-	printf("\r\n");
+		//printf("seed (1,1) from 0 v1:");
+		for (u32 i=0;i<16;i++)
+			//printf("%02X",pRNG->GenerateByte());
+			testOut1[i]=pRNG->GenerateByte();
+		//printf("\r\n");
 
-	//pRNG->SetOffset(3);
-	pRNG->SetSeedWithCoordinates(test,32,1,2);
+		if (memcmp(testVector1,testOut1,16)!=0)
+		{
+			printf("WARNING! Determined generator failed on 1st test\r\n");
+			break;
+		}
 
-	printf("seed (1,2) from 3 v2:");
-	for (u32 i=0;i<100;i++)
-		printf("%02X",pRNG->GetByteByOffset(i+3));
-		//printf("%02X",pRNG->GenerateByte());
-	printf("\r\n");
+		//pRNG->SetOffset(3);
+		pRNG->SetSeedWithCoordinates(testSeed,32,1,2);
+
+		//printf("seed (1,2) from 3 v2:");
+		for (u32 i=0;i<16;i++)
+			//printf("%02X",pRNG->GetByteByOffset(i+1003));
+			testOut2[i]=pRNG->GetByteByOffset(i+1003);
+			//printf("%02X",pRNG->GenerateByte());
+		//printf("\r\n");
+		if (memcmp(testVector2,testOut2,16)!=0)
+		{
+			printf("WARNING! Determined generator failed on 2nd test\r\n");
+			break;
+		}
+		printf("Determined generator works fine\r\n");
+		break;
+	}
 
 
 	DG_Game * game = new DG_Game();
