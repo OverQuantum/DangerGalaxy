@@ -139,9 +139,10 @@ coding demo1:
 111009: ADD: huge zooms of RealSpace (up to 1 ly)
 111009: FIX: galaxy texture balanced creation (from density)
 111009: ADD: nice spiral arms
-
-
-110901: TMP: DeterminedRandomGenerator test printf
+111011: ADD: generation of spiral and elliptical galaxies done (very very smooth, no clusterization)
+111011: CHG: start system is now on the edge of galaxy
+111011: CHG: planet and moon naming changed to ~ Hessman et al 2010 proposal (http://arxiv.org/abs/1012.0707)
+111011: ADD: PlusMinus Engine (currenly dummy, goes by x axis)
 
 
 
@@ -167,43 +168,67 @@ DONE:
 + playerShip as separate class, derivate from SpaceObject? (incorporate thrust power e.t.c)
 + RNGs and seeds
 + generation of double and multiple stars
-
-TODO
--1 more physics in star systems - HR and so on
-
--2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
-
-- Remove index "A" for root stars in single-star systems
++ zoom map around arbitrary point, starting with ship
++ galaxy map
++ galaxy-wide physics checker
++ camera further from system, than 4M (degree=4000)
 
 
-- messages on main screen
-- zoom map around arbitrary point, starting with ship
-- display more info about orbit - shape, min/max distance (with fall estimation), period
-- galaxy map
 
--3SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
+TODO:
 
-- moving of some background at FTL
-- thrust flame as sub-object to SpaceObject
-- galaxy-wide physics checker
-- HUD
-- auto-zoom camera - to show ship and nearest object
-- camera further from system, than 4M? (degree=4000) - requires remastering scene
+* MAIN PLAN
+- PlusMinus Engine
+- wormhole network
+- stargate system
+
+
+
+* Star system generation
+- HR and so on
 - planet rotation around it's axis
-- somthing to display then ship inside stars (?)
-- autopilot to travel to specific point
 - corona of star and atmosphere of planets by decal/billboard/etc
-- handling of errors
-minor:
-- check SHA1 code for license
-- remove overlapping of labels on map (how?)
+
+
+
+* FTL
+- moving of some background at FTL
+
+
+* RealSpace
+- display more info about orbit - shape, min/max distance (with fall estimation), period
+- HUD
+- messages on main screen
+- thrust flame as sub-object to SpaceObject
+- auto-zoom camera - to show ship and nearest object
+- somthing to display then ship inside stars (?)
 - better speed indicator
 - exponential fading of light sources (?)
+
+
+* Map
+m remove overlapping of labels on map (how?)
+
+* Physic
+? orbiting of gravity-domination body by orbital parameters, not simple euler
+?m change check of vector length to bounding-box - max(X,Y,Z)  - ex. for radius of star system and so on
+
+
+
+* Logic
+-2 Recheck all chains of creationg physical objects, scene nodes and map objects - FTL/back, entering/leaving star sytems and so on
+-3SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
+- autopilot to travel to specific point
+- handling of errors
+
+* Hashing
 - SHA1 - unfinalized hashing, incomplete bytes
 
-CONSIDER:
-- orbiting of gravity-domination body by orbital parameters, not simple euler
-- change check of vector length to bounding-box - max(X,Y,Z)  - ex. for radius of star system and so on
+* License
+m check SHA1 code for license
+
+
+
 
 QUESTIONS
 - how display map-info above map - gui or adjust billboard?
@@ -336,6 +361,7 @@ class RealSpaceView;
 class MapObject;
 class MapSpaceView;
 class FTLView;
+class QuasiSpaceView;
 class PlayerShip;
 class Galaxy;
 class GalaxyStarSystem;
@@ -425,6 +451,7 @@ class SpaceObject {
 			MOTION_ORBITAL,
 			MOTION_NAVIGATION,
 			MOTION_FTL,
+			MOTION_PLUSMINUS,
 		};
 
 		enum ControlType {
@@ -613,6 +640,7 @@ class DG_Game {
 			VIEW_REALSPACE,
 			VIEW_SECTOR_MAP,
 			VIEW_FTL,
+			VIEW_QUASISPACE,
 		};
 
 		int Init(int Count, char **Arguments);
@@ -682,6 +710,7 @@ class DG_Game {
 		RealSpaceView* RealSpace;
 		MapSpaceView* SectorMap;
 		FTLView* FTLSpace;
+		QuasiSpaceView* QuasiSpace;
 
 		GameView* activeView;
 
@@ -808,6 +837,21 @@ private:
 	scene::ICameraSceneNode* camera;
 };
 
+//QuasiSpaceView - to render fly in QuasiSpace of PlusMinus
+class QuasiSpaceView : public GameView
+{
+public:
+	void Init();
+	void Activate();
+	void Update(f64 frameDeltaTime);
+	void Close();
+
+private:
+	PlayerShip* playerShip;
+	SceneNode* playerShipNode;
+	scene::ICameraSceneNode* camera;
+};
+
 //PlayerShip - hold all information about player and his ship
 class PlayerShip : public SpaceObject
 {
@@ -818,12 +862,18 @@ public:
 	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 
 	//void SetGalaxyCoordinates(vector2d newPosition) {galaxyCoordinates = newPosition;}
-
 	void UpdateGalaxyCoordinates();
+
+	void JumpToQuasiSpace(s32 direction);//+1 for Plus, -1 for Minus, 0 for random (+2/-2)
+	void BreakQuasiSpace();
+	void UpdateQuasiSpace(f64 time, Galaxy* galaxy);
 
 private:
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
+
+	s32 plusMinusDirection;//+1 for Plus, -1 for Minus (+2/-2 on random)
+	f64 plusMinusTime;
 };
 
 //Galaxy - hold main information about whole Galaxy
@@ -842,11 +892,13 @@ public:
 	//void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
 	void SaveMapTexture();
 
+	vector2ds MoveByPlusMinus(vector2ds quadrant, s32 direction);
+
 	GalaxyStarSystem* DebugJump();
 
 private:
 	u32 debugStarCounter;
-	u32 galaxyType;//0 - E0, 1 - E1-E7, 2 - Sp 2 arms, 3 - Sp 3 arms, 4 - Sp 4 arms, 5 - Irr random, 6 - E* two cores
+	u32 galaxyType;//0 - E0, 1 - E1-E7, 2 - S*, 3 - Irr random, 4 - E* two cores
 
 	f64 halfDensityRadius;//10k-17k ly, ~14600 ly for Milky Way
 	f64 maxDensity;//stellar density in the core, should vary from 0.1 to 0.6
@@ -1427,6 +1479,12 @@ void SpaceObject::UpdatePhysics(f64 time)
 			//if (!(physics->IsFTLPossible(position)))
 			//	motionType = MOTION_NAVIGATION;
 		}
+		break;
+	case MOTION_PLUSMINUS:
+		{
+
+		}
+		break;
 	default:
 		break;
 	}
@@ -1537,6 +1595,8 @@ void SpaceObject::BreakFTL(f64 remainingSpeed)
 	speed.normalize();
 	speed*=remainingSpeed;
 }
+
+
 
 //#########################################################################
 //GamePhysics
@@ -2282,6 +2342,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 {
 	vector3d playerPosition;// = node->getPosition();
 	vector3df nodePosition;// = node->getPosition();
+	s32 quasiDir;
 
 	if(eventReceiver->IsKeyDown(irr::KEY_KEY_W))
 		//playerShip->speed.Y += MOVEMENT_SPEED * frameDeltaTime;
@@ -2358,6 +2419,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
 		{
 			playerShip->JumpToFTL(3000.0);
+			DisplayMessage(L"Jump to FTL");
 			//gameRoot->ActivateFTL();
 			gameRoot->SwitchView(DG_Game::VIEW_FTL);
 
@@ -2367,6 +2429,48 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			DisplayMessage(L"Gravity is too high to jump to FTL");
 		}
 	}
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_MINUS) || eventReceiver->IsKeyPressed(irr::KEY_SUBTRACT))
+	{
+		quasiDir = -1;
+		goto JumpToQuasi;
+	}
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_PLUS) || eventReceiver->IsKeyPressed(irr::KEY_ADD))
+	{
+		quasiDir = 1;
+JumpToQuasi:
+		//TODO: check for outside galaxy
+
+		if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
+		{
+			playerShip->JumpToQuasiSpace(quasiDir);
+			if (quasiDir==1)
+			{
+				DisplayMessage(L"PlusMinus Engine activated by Plus");
+			}
+			else if (quasiDir==-1)
+			{
+				DisplayMessage(L"PlusMinus Engine activated by Minus");
+			}
+			else
+			{
+				//N/A
+				DisplayMessage(L"PlusMinus Engine activated by Plus and Minus at once");
+			}
+
+			gamePhysics->GoInterstellar();
+			gameRoot->GoInterstellar();
+
+			gameRoot->SwitchView(DG_Game::VIEW_QUASISPACE);
+		}
+		else
+		{
+			DisplayMessage(L"Gravity is too high to use PlusMinus Engine");
+		}
+	}
+
+
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_J))
 	{
 		GalaxyStarSystem* jumpTo;
@@ -2827,7 +2931,7 @@ void FTLView::Update(f64 frameDeltaTime)
 	}
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
 	{
-		DisplayMessage(L"Manuial exit from FTL");
+		DisplayMessage(L"Manual exit from FTL");
 		playerShip->BreakFTL(100.0);
 		//gameRoot->ActivateRealSpace();
 		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
@@ -2854,6 +2958,101 @@ void FTLView::Close()
 {
 	sceneManager->drop();
 }
+
+//#########################################################################
+//QuasiSpaceView
+
+void QuasiSpaceView::Init()
+{
+	resourceManager = gameRoot->GetResourceManager();
+
+	videoDriver = resourceManager->GetVideoDriver();
+	//device = resourceManager->GetDevice();
+	eventReceiver = resourceManager->GetEventReceiver();
+
+	sceneManager->clear();
+
+	resourceManager->SetSceneManager(sceneManager);
+
+	playerShipNode  = resourceManager->NewShipNode();
+
+	SceneNode* bubble = sceneManager->addSphereSceneNode((f32)0.75,16);
+	if (bubble)
+	{
+		bubble->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/yellow.bmp"));
+		//bubble->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
+		bubble->setMaterialFlag(video::EMF_LIGHTING, false);
+		bubble->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR);
+		//bubble->getMaterial(0).EmissiveColor.set(255,64,64,64);
+	}
+
+	/*
+	playerShipNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
+	if (playerShipNode)
+	{
+		playerShipNode->setScale(core::vector3df(1.f));
+		playerShipNode->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/ships.png"));
+		playerShipNode->setMaterialFlag(video::EMF_LIGHTING, false);
+		playerShipNode->setMaterialType(video::EMT_TRANSPARENT_ALPHA_CHANNEL);
+	}*/
+
+	camera = sceneManager->addCameraSceneNode();
+	if (camera)
+	{
+		camera->setPosition(vector3df(0,0,-20.f));
+		camera->setTarget(vector3df(0));
+		camera->setFOV(0.7f);
+	}
+
+}
+
+void QuasiSpaceView::Activate()
+{
+	playerShip = gameRoot->GetPlayerShip();
+
+	playerShipNode->setRotation(vector3df(0,0,(f32)playerShip->GetRotation()));
+	//sceneManager->addSceneNode(
+}
+
+void QuasiSpaceView::Update(f64 frameDeltaTime)
+{
+	if (playerShip->GetMotionType()!=SpaceObject::MOTION_PLUSMINUS)
+	{
+		DisplayMessage(L"Drop out of QuasiSpace");
+		playerShip->BreakQuasiSpace();
+		//gameRoot->ActivateRealSpace();
+		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
+	}
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
+	{
+		text_string galaxyCoords=L"Coordinates: ";
+		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().X,L"%.010f");
+		galaxyCoords+=L", ";
+		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
+		DisplayMessage(galaxyCoords);
+	}
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
+	{
+		DisplayMessage(L"Manual exit from QuasiSpace");
+		playerShip->BreakQuasiSpace();
+		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
+	}
+
+	gamePhysics->Update(frameDeltaTime);
+
+	//TODO: use resourceManager to render?
+	videoDriver->beginScene(true, true, video::SColor(255,200,20,200));
+	sceneManager->drawAll();
+	videoDriver->endScene();
+}
+
+void QuasiSpaceView::Close()
+{
+	sceneManager->drop();
+}
+
 
 //#########################################################################
 //DG_Game
@@ -2967,6 +3166,12 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	FTLSpace->SetPhysics(gamePhysics);
 	FTLSpace->Init();
 
+	QuasiSpace = new QuasiSpaceView();
+	QuasiSpace->SetRoot(this);
+	QuasiSpace->SetSceneManager(smgr->createNewSceneManager()); //drop in QuasiSpace::Close
+	QuasiSpace->SetPhysics(gamePhysics);
+	QuasiSpace->Init();
+
 
 	lastFPS = -1;
 
@@ -3012,7 +3217,53 @@ void DG_Game::Update() {
 	//Game physics is updated via view due to view-dependency behaviour of physics (i.e. physics not updated in case of viewing map)
 	activeView->Update(frameDeltaTime);
 
-	playerShip->UpdateGalaxyCoordinates();
+
+	if (playerShip->GetMotionType()==SpaceObject::MOTION_PLUSMINUS)
+	{
+		playerShip->UpdateQuasiSpace(frameDeltaTime,wholeGalaxy);
+	}
+	else
+	{
+		playerShip->UpdateGalaxyCoordinates();
+
+		//Check that player reach border some star system and so this system should be loaded
+		if (gamePhysics->IsInterstellar())
+		{
+
+			if (!gamePhysics->GetGalaxyQuadrant().equals(playerShip->GetGalaxyQuadrant()))
+			{
+			//update center of interstellar on changing quadrants
+				//vector2ds shift = playerShip->GetGalaxyQuadrant()-gamePhysics->GetGalaxyQuadrant();
+				//vector2d shiftPos = vector2d((f64)(shift.X),(f64)(shift.Y));
+				vector2ds quadrant = playerShip->GetGalaxyQuadrant();
+				vector2d playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
+				vector2d quadrantGalaxyCoordinates;
+				vector3d playerLocalPosition;
+
+				quadrantGalaxyCoordinates.X = 0.5+(f64)quadrant.X;
+				quadrantGalaxyCoordinates.Y = 0.5+(f64)quadrant.Y;
+
+				gamePhysics->SetGalaxyCoordinatesOfCenter(quadrantGalaxyCoordinates);
+				gamePhysics->SetGalaxyQuadrant(quadrant);
+
+				playerGalaxyCoordinates-=quadrantGalaxyCoordinates;
+				playerLocalPosition.X = playerGalaxyCoordinates.X*LIGHTYEAR;
+				playerLocalPosition.Y = playerGalaxyCoordinates.Y*LIGHTYEAR;
+				playerLocalPosition.Z = 0;
+
+				playerShip->SetPosition(vector3d(playerLocalPosition));
+			}
+
+			wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates()); //Could be optimized - into scope of update center of interstellar
+
+			//TODO: this is dumb check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
+			GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
+			if (nearStarSystem)
+			{
+				GoStarSystem(nearStarSystem);
+			}
+		}
+	}
 
 	//Check that player fly too far from star system and it (system) could be unloaded
 	if (gamePhysics->CheckLeaveStarSystem())
@@ -3027,44 +3278,6 @@ void DG_Game::Update() {
 		//if (IsViewActive(VIEW_REALSPACE))
 		GoInterstellar();
 	}
-
-	//Check that player reach border some star system and so this system should be loaded
-	if (gamePhysics->IsInterstellar())
-	{
-		if (!gamePhysics->GetGalaxyQuadrant().equals(playerShip->GetGalaxyQuadrant()))
-		{
-		//update center of interstellar on changing quadrants
-			//vector2ds shift = playerShip->GetGalaxyQuadrant()-gamePhysics->GetGalaxyQuadrant();
-			//vector2d shiftPos = vector2d((f64)(shift.X),(f64)(shift.Y));
-			vector2ds quadrant = playerShip->GetGalaxyQuadrant();
-			vector2d playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
-			vector2d quadrantGalaxyCoordinates;
-			vector3d playerLocalPosition;
-
-			quadrantGalaxyCoordinates.X = 0.5+(f64)quadrant.X;
-			quadrantGalaxyCoordinates.Y = 0.5+(f64)quadrant.Y;
-
-			gamePhysics->SetGalaxyCoordinatesOfCenter(quadrantGalaxyCoordinates);
-			gamePhysics->SetGalaxyQuadrant(quadrant);
-
-			playerGalaxyCoordinates-=quadrantGalaxyCoordinates;
-			playerLocalPosition.X = playerGalaxyCoordinates.X*LIGHTYEAR;
-			playerLocalPosition.Y = playerGalaxyCoordinates.Y*LIGHTYEAR;
-			playerLocalPosition.Z = 0;
-
-			playerShip->SetPosition(vector3d(playerLocalPosition));
-		}
-
-		wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates()); //Could be optimized - into scope of update center of interstellar
-
-		//TODO: this is dumb check, if FTL speed is larger than 50000c, then on 50 fps min checks may be too seldom to "catch" star system
-		GalaxyStarSystem* nearStarSystem = wholeGalaxy->GetNearStarSystem(playerShip->GetGalaxyCoordinates());
-		if (nearStarSystem)
-		{
-			GoStarSystem(nearStarSystem);
-		}
-	}
-
 
 	s32 fps = driver->getFPS();
 
@@ -3223,6 +3436,10 @@ void DG_Game::InternalAcviateView(ViewType newView)
 		FTLSpace->Activate();
 		activeView = FTLSpace;
 		break;
+	case VIEW_QUASISPACE:
+		QuasiSpace->Activate();
+		activeView = QuasiSpace;
+		break;
 	}
 }
 
@@ -3283,6 +3500,8 @@ bool DG_Game::IsViewActive(ViewType checkedView)
 PlayerShip::PlayerShip()
 {
 	SpaceObject();
+	plusMinusTime = 0;
+	plusMinusDirection = 1;
 	galaxyCoordinates = vector2d(0);
 }
 
@@ -3295,6 +3514,51 @@ void PlayerShip::UpdateGalaxyCoordinates()
 	galaxyQuadrant.Y = (s32)floor(galaxyCoordinates.Y);
 }
 
+void PlayerShip::JumpToQuasiSpace(s32 direction)
+{
+	plusMinusDirection = direction;
+	if (direction==0)
+	{
+		plusMinusDirection = 2;//TODO: or minus 2
+	}
+	motionType = MOTION_PLUSMINUS;
+	speed=vector3d(0);
+}
+
+void PlayerShip::BreakQuasiSpace()
+{
+	motionType = MOTION_NAVIGATION;
+	//speed.normalize();
+	speed=vector3d(0);
+}
+
+void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
+{
+	plusMinusTime+=time;
+	while (plusMinusTime>0.01)
+	{
+		galaxyQuadrant = galaxy->MoveByPlusMinus(galaxyQuadrant,plusMinusDirection);
+		if (galaxy->CheckStarPresence(galaxyQuadrant)!=0)
+		{
+			GalaxyStarSystem* exitTo = galaxy->GetStarSystem(galaxyQuadrant);
+			//galaxyCoordinates = exitTo->GetGalaxyCoordinates();
+			physics->SetGalaxyCoordinatesOfCenter(exitTo->GetGalaxyCoordinates());
+			position = vector3d(0);
+			motionType = MOTION_NAVIGATION;
+			speed=vector3d(0);
+			return;
+		}
+		
+		/*text_string galaxyCoords=L" - PlusMinus goes to ";
+		galaxyCoords+=galaxyQuadrant.X;
+		galaxyCoords+=L", ";
+		galaxyCoords+=galaxyQuadrant.Y;*/
+		wprintf(L" - PlusMinus goes to %i,%i\r\n",galaxyQuadrant.X,galaxyQuadrant.Y);
+
+		plusMinusTime-=0.01;
+	}
+}
+
 //#########################################################################
 //Galaxy
 
@@ -3304,7 +3568,8 @@ void Galaxy::Init()
 
 	//TEMP
 	galaxySeed[0]=0x10;
-	//galaxySeed[0]=0x11;
+	//galaxySeed[0]=0x18;//E1 galaxy
+	galaxySeed[0]=0x12;
 	galaxySeed[1]=0x12;
 	galaxySeed[2]=0x17;
 	galaxySeed[3]=0xF0;
@@ -3327,7 +3592,9 @@ void Galaxy::Init()
 	f64 rotationAngle;
 	f64 stellarDensity1;
 	f64 densityKoeff;
-	f64 len2,fi,dist,angleDist;
+	f64 len2,fi,dist,distSQ,pDist,angleDist;
+	text_string galaxyClass = L"*";;
+
 
 	//for spiral galaxies
 	f64 spiralityB;
@@ -3335,11 +3602,32 @@ void Galaxy::Init()
 	f64 armWidth;
 	f64 armDist1,armDistK;
 	f64 pitchAngle;//in radians
+	//f64 gapDensity;//stellar density in the interarm gap on r=outerRadius/2
 
 	starCountEstimation=0;
 	vector2d coords;
 	vector2d coordsArm;
 
+	number = galaxyRNG->GenerateByte();
+	if (number<197)
+	{//77% - spiral
+		galaxyType = 2;
+	}
+	else //if (number<247)
+	{//20% - elliptical
+		galaxyType = 0;//E0
+
+	}
+	/*
+	else
+	{//3% - irregular
+		//Not implemented
+		galaxyType = 3;//Irr
+		//TODO: irregular galaxies
+	}
+	*/
+
+	//N/A for irregulars
 	for (;;)
 	{
 		number = galaxyRNG->GenerateByte();
@@ -3348,38 +3636,107 @@ void Galaxy::Init()
 		maxDensity = 0.2 + 0.0015*number; //0.2 - 0.6
 		outerRadius = sqrt(log(maxDensity/INTERGALACTIC_STARS_DENSITY))*halfDensityRadius;
 		
-		if (outerRadius<65530)//if > then generate density and radius one again
+		if (outerRadius<65530)//if > then generate density and radius once again
 			break;
 	}
 
-	number = galaxyRNG->GenerateByte();
-	//77% - spiral
-	//20% - elliptical
-	//3% - irregular
-	if (number>70)
-	{//27%
-		number = galaxyRNG->GenerateByte();
-		eccentricity = (0.3+number*0.00235);//0.3 - 0.9, as ~1.0 not needed
-		//eccentricity = 0.1;
-		minorRadius = outerRadius*eccentricity;
-		number = galaxyRNG->GenerateByte();
-		rotationAngle = number*TWO_PI/255.0;
-		//rotationAngle  = 2.5;
-		galaxyType = 1;//E1-E7
-	}
-	else
+	//Generate elliptical form for E*
+	if (galaxyType==0)
 	{
-		galaxyType = 0;//E0
+		galaxyClass = L"E0";
+		number = galaxyRNG->GenerateByte();
+		if (number<128)
+		{//50%
+			galaxyType = 1;//E1-E7
+
+			//Eccentricity
+			//TODO: more realistic eccentricity
+			number = galaxyRNG->GenerateByte();
+			eccentricity = (0.3+number*0.00235);//0.3 - 0.9, 1.0 not needed
+
+			//Rotation angle, any in (0,2*pi)
+			number = galaxyRNG->GenerateByte();
+			rotationAngle = number*TWO_PI/255.0;
+
+			minorRadius = outerRadius*eccentricity;
+			{
+				wchar_t tmp[255];
+				swprintf(tmp, 255, L"E%i", (s32)floor(10.0-eccentricity*10.0));
+				galaxyClass = tmp;
+			}
+		}
 	}
 
-	galaxyType = 2;//Sa-Sc
-	spiralityB = 0.15;//positive -> going from center to edge is CCW, negative -> CW
-	armKoef = 1.0;//2 arms
-	armWidth = 1000.0;
-	pitchAngle = TWO_PI*0.25-atan(abs(1.0/spiralityB));
-	armWidth = armWidth/sin(pitchAngle);
-	//armDist0 = halfDensityRadius*.2;//inside this radius is only a core
-	armDist1 = halfDensityRadius*.5;
+	if (galaxyType==2)
+	{
+		//spiralityB = 0.27 for Milky Way
+		number = galaxyRNG->GenerateByte();
+		if (number<63)
+		{	
+			galaxyClass = L"Sa";
+			spiralityB=number*0.00177;//0.05-0.16, class Sa
+		}
+		else if (number<163)
+		{
+			galaxyClass = L"Sb";
+			spiralityB=0.16+(number-63)*0.0018;//0.16-0.34, class Sb
+		}
+		else if (number<252)
+		{
+			galaxyClass = L"Sc";
+			spiralityB=0.34+(number-163)*0.00261;//0.34-0.57, class Sñ
+		}
+		else
+		{
+			galaxyClass = L"Sd";
+			number = galaxyRNG->GenerateByte();
+			spiralityB=0.57+number*0.00168;//0.57-1.0, class Sd
+		}
+		//TODO: more realistic spirality
+
+		//direction of arms, positive -> going from center to edge is CCW, negative -> CW
+		number = galaxyRNG->GenerateByte();
+		if (number<127)
+			spiralityB =-spiralityB;
+
+		//Number of arms
+		number = galaxyRNG->GenerateByte();
+		if (number<200)
+		{//78%
+			armKoef = 1.0;//2 arms
+		}
+		else if (number<251)
+		{//20%
+			armKoef = 2.0;//4 arms
+			galaxyClass += L"-4";
+		}
+		else
+		{//2%
+			armKoef = 1.5;//3 arms
+			galaxyClass += L"-3";
+		}
+		//TODO: more realistic number of arms (?)
+
+		//Rotation angle - any in (0,2*pi)
+		number = galaxyRNG->GenerateByte();
+		rotationAngle = number*TWO_PI/255.0;
+
+		/*
+		//Milky Way
+		spiralityB = 0.27;
+		armKoef = 2.0;*/
+
+		//pitch angle, calc from spirality
+		pitchAngle = TWO_PI*0.25-atan(abs(1.0/spiralityB));
+
+		armDist1 = halfDensityRadius*.5;
+
+		//Width of arms
+		number = galaxyRNG->GenerateByte();
+		armWidth  = outerRadius*(0.022+number*3.843e-4);
+		//min: 0.022*r, ~159M star systems for r=60kly, maxdens=0.3; ~41M for r=37,5kly, maxdens = 0.2
+		//max: 0.12*r, ~536M star systems for r=60kly, maxdens=0.3; ~1240M for r=65.5kly maxdens = 0.6
+	}
 
  
 	densityKoeff = -1.0/(halfDensityRadius*halfDensityRadius);
@@ -3409,23 +3766,24 @@ void Galaxy::Init()
 		}
 		if (galaxyType==2)
 		{
-			/*
-			stellarDensity1 = exp(densityKoeff*coords.getLengthSQ());
-			dist = coords.getLength();
-			fi = rotationAngle + log(dist)/0.2;
-			coordsArm.X = dist*cos(fi);
-			coordsArm.Y = dist*sin(fi);
-			coordsArm-=coords;
-			dist = coordsArm.getLengthSQ();
-			if (dist>1e8) dist = 1e8;
-			stellarDensity1 *= 1.0 - dist*0.9e-8;
-			stellarDensity1 *= maxDensity;
-			*/
+			distSQ = coords.getLengthSQ();
+			dist = sqrt(distSQ);
+			//stellarDensity1 = maxDensity*exp(densityKoeff*distSQ);
+			//stellarDensity1 = maxDensity*exp(densityKoeff*distSQ)*(1.0-distSQ*densityKoeff);
+			if (dist<(outerRadius*.5))
+			{//Arms density from 0 to r/2 is maximum
+				stellarDensity1 = maxDensity;
+			}
+			else
+			{//Arms density after r/2 decreases and on r reach value of exponent 
 
-			stellarDensity1 = maxDensity*exp(densityKoeff*coords.getLengthSQ());
-			dist = coords.getLength();
-			//fi = atan2(coords.Y,coords.X)-rotationAngle;
-			//angleDist = log(dist)/spiralityB - fi;
+				//pDist = dist*2.0-outerRadius;  //to fast grow after 1 (dist = outerRadius) 
+				//pDist = dist-0.25*outerRadius*outerRadius/dist; // f(1)<1, bad
+				//pDist = (4*dist-outerRadius*outerRadius/dist)/3.0; 
+				pDist = (2.0*dist-outerRadius)*(2.0*dist/outerRadius-1.0);//looks good
+
+				stellarDensity1 = maxDensity*exp(densityKoeff*pDist*pDist);
+			}
 
 			//Angle distance (in radians) between logarithmic spiral and current quadrant, incl. rotation
 			angleDist = log(dist)/spiralityB - atan2(coords.Y,coords.X) - rotationAngle;
@@ -3433,16 +3791,6 @@ void Galaxy::Init()
 			//Koeff of arms/core transfer function
 			//1.0 for arms, 0.0 for core
 			armDistK = 1.0/(1.0+exp(5.0*(1.0-dist/armDist1)));
-
-			/*
-			angleDist = angleDist/TWO_PI;
-			angleDist -= floor(angleDist);
-			angleDist *= TWO_PI;
-			//angleDist = abs(angleDist-3.1415);
-			//if (angleDist>0.3) angleDist=0.3;
-			//stellarDensity1 *= 1.0 - angleDist*3;
-			angleDist = abs(angleDist-3.1415)*dist;
-			*/
 
 			//Linear distance from spiral arm to current quadrant
 			//sin() + armKoef defines number of arms, armWidth - width of an arm
@@ -3458,10 +3806,13 @@ void Galaxy::Init()
 		starCountEstimation+=stellarDensity1*4096.0;//4096 = 64*64 ly
 	}
 
-	stellarDensity[0][0]=maxDensity;
+	//TODO: clusterization of stars in arms (and core?)
+	//TODO: additional clusters
+	//TODO: Additional rings or arc around galaxy
 
 	SaveMapTexture();
-	wprintf(L"DG: Galaxy generated, ~%.0f star systems\r\n",starCountEstimation);
+	wprintf(L"DG: Galaxy generated, class %ws, ~%.0f star systems\r\n",galaxyClass.c_str(),starCountEstimation);
+	wprintf(L"    radius: ~%.0f ly\r\n",outerRadius);
 
 	UpdateKnownStars();
 
@@ -3590,6 +3941,7 @@ u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 	return 0;//no star
 }
 
+/*
 GalaxyStarSystem* Galaxy::GetStartStarSystem()
 {
 	u32 i;
@@ -3604,6 +3956,49 @@ GalaxyStarSystem* Galaxy::GetStartStarSystem()
 	for (i=0;i<knownStars.size();i++)
 	{
 		distanceSQ = (knownStars[i]->GetGalaxyCoordinates()).getLengthSQ();//distance from (0,0)
+		if (distanceSQ<minDistanceSQ)
+		{
+			minDistanceSQ = distanceSQ;
+			minDistanceObject = knownStars[i];
+		}
+	}
+
+	if (!minDistanceObject)
+		minDistanceObject = knownStars[0];
+	return minDistanceObject;
+}*/
+
+GalaxyStarSystem* Galaxy::GetStartStarSystem()
+{
+	u32 i;
+	f64 minDistanceSQ=1e20;
+	f64 distanceSQ;
+	GalaxyStarSystem* minDistanceObject=0;
+	s32 x,y;
+
+	y = 1024;//0 by galaxy coordinates
+
+	for (x=2047;x>=1026;x--)
+		if (stellarDensity[x][y]>0.02)
+			break;
+
+	knownStarsCenter.X = x*64-65504;
+	knownStarsCenter.Y = 0;
+
+	for (;;)
+	{
+		UpdateKnownStars();//update cache of stars around (0,0)
+
+		if (knownStars.size()>0)
+			break;
+
+		knownStarsCenter.X -= 10;
+	}
+
+	for (i=0;i<knownStars.size();i++)
+	{
+		//distanceSQ = (knownStars[i]->GetGalaxyCoordinates()).getLengthSQ();//distance from (0,0)
+		distanceSQ = abs(knownStars[i]->GetGalaxyCoordinates().Y);//need min Y coordinate
 		if (distanceSQ<minDistanceSQ)
 		{
 			minDistanceSQ = distanceSQ;
@@ -3753,6 +4148,12 @@ void Galaxy::UpdateKnownStars()
 	wprintf(L"DG: quadrant (%i,%i) stars around: %i\r\n",knownStarsCenter.X,knownStarsCenter.Y,knownStars.size());
 	
 	//knownStars.
+}
+
+vector2ds Galaxy::MoveByPlusMinus(vector2ds quadrant, s32 direction)
+{
+	quadrant.X+=direction;
+	return quadrant;
 }
 
 //#########################################################################
@@ -4056,7 +4457,14 @@ void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 m
 				moon->SetGravity(true,false);
 				{
 					wchar_t tmp[255];
-					swprintf(tmp, 255, L"Moon %i%c", i,97+j);
+					if (j>26)
+					{
+						swprintf(tmp, 255, L"Moon %i%c%c", i,97+(j/26),97+(j%26));
+					}
+					else
+					{
+						swprintf(tmp, 255, L"Moon %i%c", i,97+j);
+					}
 					moon->SetName(tmp);
 				}
 
@@ -4297,7 +4705,8 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 		}
 		componentIndex++;
 
-		wprintf(L" * Single star %f \r\n", component->mass);
+		//wprintf(L" * Single star %f \r\n", component->mass);
+		wprintf(L" * Star %ws %f \r\n", star->GetName().c_str(), component->mass);
 		returnObject = star;
 	}
 
@@ -4389,8 +4798,9 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 
 		{
 			wchar_t tmp[255];
+			//swprintf(tmp, 255, L"Planet %i", planetIndex);
 			planetIndex++;
-			swprintf(tmp, 255, L"Planet %i", planetIndex);
+			swprintf(tmp, 255, L"Planet %c", 97+planetIndex);//starting from b
 			planet->SetName(tmp);
 		}
 
@@ -4437,7 +4847,9 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 			moon->SetGravity(true,false);
 			{
 				wchar_t tmp[255];
-				swprintf(tmp, 255, L"Moon %i%c", planetIndex,97+j);
+				swprintf(tmp, 255, L"Moon %c%i", 97+planetIndex,(j+2));
+				//swprintf(tmp, 255, L"Moon %i%c", planetIndex,97+j);
+
 				moon->SetName(tmp);
 			}
 
