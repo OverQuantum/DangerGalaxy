@@ -137,12 +137,14 @@ coding demo1:
 111009: FIX: u64 for non-Windows
 111009: ADD: 1000fps limit
 111009: ADD: huge zooms of RealSpace (up to 1 ly)
+111009: ADD: Determined generator test
 111009: FIX: galaxy texture balanced creation (from density)
 111009: ADD: nice spiral arms
 111011: ADD: generation of spiral and elliptical galaxies done (very very smooth, no clusterization)
 111011: CHG: start system is now on the edge of galaxy
 111011: CHG: planet and moon naming changed to ~ Hessman et al 2010 proposal (http://arxiv.org/abs/1012.0707)
 111011: ADD: PlusMinus Engine (currenly dummy, goes by x axis)
+111012: ADD: PlusMinus Engine by correct curve
 
 
 
@@ -178,13 +180,16 @@ DONE:
 TODO:
 
 * MAIN PLAN
-- PlusMinus Engine
+!- PlusMinus Engine
+ - outer galaxy limit
+ - plus and minus at once
 - wormhole network
 - stargate system
 
 
 
 * Star system generation
+! Make option for planet naming, switch default option to our own naming
 - HR and so on
 - planet rotation around it's axis
 - corona of star and atmosphere of planets by decal/billboard/etc
@@ -874,6 +879,7 @@ private:
 
 	s32 plusMinusDirection;//+1 for Plus, -1 for Minus (+2/-2 on random)
 	f64 plusMinusTime;
+	s32 plusMinusCounter;//DEBUG
 };
 
 //Galaxy - hold main information about whole Galaxy
@@ -893,6 +899,7 @@ public:
 	void SaveMapTexture();
 
 	vector2ds MoveByPlusMinus(vector2ds quadrant, s32 direction);
+	s32 HilbertCurveDirection(s32 x, s32 y, s32 direction);
 
 	GalaxyStarSystem* DebugJump();
 
@@ -2794,7 +2801,8 @@ void MapSpaceView::Activate()
 	}
 
 	//cameraDistanceDegree = 5500.0;
-	cameraDistanceDegree = 11000.0;
+	//cameraDistanceDegree = 11000.0;//galaxy view
+	cameraDistanceDegree = 8400.0;//near stars view
 	UpdateCameraDistance();
 }
 
@@ -3019,7 +3027,7 @@ void QuasiSpaceView::Update(f64 frameDeltaTime)
 	if (playerShip->GetMotionType()!=SpaceObject::MOTION_PLUSMINUS)
 	{
 		DisplayMessage(L"Drop out of QuasiSpace");
-		playerShip->BreakQuasiSpace();
+		//playerShip->BreakQuasiSpace();
 		//gameRoot->ActivateRealSpace();
 		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
 	}
@@ -3502,6 +3510,7 @@ PlayerShip::PlayerShip()
 	SpaceObject();
 	plusMinusTime = 0;
 	plusMinusDirection = 1;
+	plusMinusCounter = 0;
 	galaxyCoordinates = vector2d(0);
 }
 
@@ -3516,6 +3525,10 @@ void PlayerShip::UpdateGalaxyCoordinates()
 
 void PlayerShip::JumpToQuasiSpace(s32 direction)
 {
+	plusMinusCounter = 0;
+	//if (abs(galaxyQuadrant.Y)<100)
+	//	galaxyQuadrant = vector2ds(-65536,65535);//DEBUG
+
 	plusMinusDirection = direction;
 	if (direction==0)
 	{
@@ -3530,12 +3543,35 @@ void PlayerShip::BreakQuasiSpace()
 	motionType = MOTION_NAVIGATION;
 	//speed.normalize();
 	speed=vector3d(0);
+
+	wprintf(L" - PlusMinus breaked after %i steps\r\n",plusMinusCounter);
+
+	physics->SetGalaxyCoordinatesOfCenter(vector2d(galaxyQuadrant.X+0.5,galaxyQuadrant.Y+0.5));
+	position = vector3d(0);
 }
 
 void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 {
+	/* Tests in default galaxy
+		(64510,61915) OBS 5567
+		3701608 steps
+		(62841,63341) PGU 3297
+		231690 steps
+		(62506,62505) THH 1343
+		1893148 steps
+		(62204,63884) VYZ 0378
+		8437341 steps (over boundary)
+		(-65266,64015) DUX 5459
+		192886 steps
+		(-65332,63738) SCL 9376
+		5424656 steps
+		(-61749,63834) LEI 3354
+
+		speed: 100k / second
+	*/
+
 	plusMinusTime+=time;
-	while (plusMinusTime>0.01)
+	while (plusMinusTime>0.0001) //10k steps per second of player
 	{
 		galaxyQuadrant = galaxy->MoveByPlusMinus(galaxyQuadrant,plusMinusDirection);
 		if (galaxy->CheckStarPresence(galaxyQuadrant)!=0)
@@ -3546,16 +3582,19 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 			position = vector3d(0);
 			motionType = MOTION_NAVIGATION;
 			speed=vector3d(0);
+			wprintf(L" - PlusMinus finished after %i steps\r\n",plusMinusCounter);
 			return;
 		}
+		plusMinusCounter++;
 		
 		/*text_string galaxyCoords=L" - PlusMinus goes to ";
 		galaxyCoords+=galaxyQuadrant.X;
 		galaxyCoords+=L", ";
 		galaxyCoords+=galaxyQuadrant.Y;*/
-		wprintf(L" - PlusMinus goes to %i,%i\r\n",galaxyQuadrant.X,galaxyQuadrant.Y);
+		
+		//wprintf(L" - PlusMinus goes to %i,%i\r\n",galaxyQuadrant.X,galaxyQuadrant.Y);
 
-		plusMinusTime-=0.01;
+		plusMinusTime-=0.0001;
 	}
 }
 
@@ -3569,7 +3608,7 @@ void Galaxy::Init()
 	//TEMP
 	galaxySeed[0]=0x10;
 	//galaxySeed[0]=0x18;//E1 galaxy
-	galaxySeed[0]=0x12;
+	//galaxySeed[0]=0x12;
 	galaxySeed[1]=0x12;
 	galaxySeed[2]=0x17;
 	galaxySeed[3]=0xF0;
@@ -4152,8 +4191,137 @@ void Galaxy::UpdateKnownStars()
 
 vector2ds Galaxy::MoveByPlusMinus(vector2ds quadrant, s32 direction)
 {
-	quadrant.X+=direction;
+	switch(HilbertCurveDirection(quadrant.X+65536,quadrant.Y+65536,direction))
+	{
+	case 0:	quadrant.X++; break;
+	case 1:	quadrant.Y++; break;
+	case 2:	quadrant.X--; break;
+	case 3:	quadrant.Y--; break;
+	}
+	if (quadrant.Y==65536)
+	{
+		quadrant.X=65535;quadrant.Y=65535;
+	}
+	if (quadrant.X==65536)
+	{
+		quadrant.X=-65536;quadrant.Y=65535;
+	}
 	return quadrant;
+}
+
+//x: (0,+inf) y: (0,+inf), direction - +1 or -1
+//returns: 0 - left, 1 - down, 2 - right, 3 - up
+s32 Galaxy::HilbertCurveDirection(s32 x, s32 y, s32 direction)
+{
+	s32 k,p;
+	if (x==0 && y==0) //main line
+		if (direction<0)
+			return 1;//CCW
+		else
+			return 0;//CW
+
+	//TODO: comment and optimize calculations
+
+    //determine quarter size
+    k = x;
+    if (y > k) k=y;
+    p = 2;
+    while (k>=p)
+        p*=2;
+    
+    p/=2;
+    
+    //p is quarter size, point is either top-right, botton-left or bottom-right quarter
+    
+	if (direction<0)
+	{//CCW
+		if (y >= p)
+		{
+			if (x >= p)
+			{
+				//bottom-right
+				if (x==(p*2-1) && y==p)
+				{
+					//exception - connection to top-right
+					return 3;
+				}
+				else
+				{
+					//repeat top-left with mirror against main diagonal (x=y)
+					return HilbertCurveDirection(y - p, x - p,direction)^1;
+				}
+			}
+			else
+			{
+                //bottom-left
+                if (x==0 && y==(p*2-1))
+				{
+                    //exception - connection to outer
+                    return 1;
+				}
+                else
+				{
+                    //repeat top-left with mirror against secondary diagonal (x+y=p)
+                    return HilbertCurveDirection(p - 1 - (y - p), p - 1 - x,direction)^3;
+				}
+			}
+		}
+		else
+		{
+			//top-right
+			if (x==p && y==(p - 1))
+			{
+				//exception - connection to top-left
+				return 2;
+			}
+			else
+			{
+				//repeat top-left quarter as is
+				return HilbertCurveDirection(x - p, y,direction);
+			}
+		}
+	}
+	else
+	{//CW
+		if (y >= p)
+		{
+			if (x >= p)
+			{
+				//bottom-right
+				if (x==(p*2-1) && y==(p*2-1))
+				{
+					//exception - connection to outer
+					return 0;
+				}
+				else
+				{
+					//repeat top-left with mirror against main diagonal (x=y)
+					return HilbertCurveDirection(y - p, x - p,direction)^1;
+				}
+			}
+			else
+			{
+				//bottom-left
+				//repeat top-left with mirror against secondary diagonal (x+y=p)
+				return HilbertCurveDirection(p - 1 - (y - p), p - 1 - x,direction)^3;
+			}
+		}
+		else
+		{
+			//top-right
+			if (x==(p * 2 - 1) && y==(p - 1))
+			{
+				//exception - connection to bottom-right
+				return 1;
+			}
+			else
+			{
+				//repeat top-left quarter as is
+				return HilbertCurveDirection(x - p, y,direction);
+			}
+		}
+	}
+
 }
 
 //#########################################################################
