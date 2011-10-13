@@ -145,6 +145,15 @@ coding demo1:
 111011: CHG: planet and moon naming changed to ~ Hessman et al 2010 proposal (http://arxiv.org/abs/1012.0707)
 111011: ADD: PlusMinus Engine (currenly dummy, goes by x axis)
 111012: ADD: PlusMinus Engine by correct curve
+111013: ADD: Singleton GlobalURNG
+111013: ADD: Third option of PlusMinus Engine (by gray '*' key)
+111013: FIX: Added check PlusMinus Engine for galaxy grid
+111013: CHG: PlusMinus Engine manual exit disabled
+111013: CHG: planet and moon naming changed back to my own
+111013: FIX: Moon orbit better limited by planet orbits
+111013: CHG: Switch to star system on exit from PlusMinus moved into UpdateQuasiSpace
+111013: FIX: Leaving star system moved from 0.1 to 0.101 ly from center (to make hysteresis)
+111013: CHG: Start is now 0.07 ly from star system center
 
 
 
@@ -174,6 +183,7 @@ DONE:
 + galaxy map
 + galaxy-wide physics checker
 + camera further from system, than 4M (degree=4000)
++ fix enter/leaving star system with hysteresis
 
 
 
@@ -181,22 +191,23 @@ TODO:
 
 * MAIN PLAN
 !- PlusMinus Engine
- - outer galaxy limit
- - plus and minus at once
+ - entering to starsystem at random location on specific gravity strength
 - wormhole network
 - stargate system
 
 
 
 * Star system generation
-! Make option for planet naming, switch default option to our own naming
 - HR and so on
 - planet rotation around it's axis
 - corona of star and atmosphere of planets by decal/billboard/etc
+- Option for planet naming by Hessman 2010 proposal
 
 
 
 * FTL
+- going/exiting FTL cannot happens in vicinity of big object, regardless of gravity
+- destruction of objects around ship on going/exiting FTL
 - moving of some background at FTL
 
 
@@ -225,6 +236,8 @@ m remove overlapping of labels on map (how?)
 -3SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 - autopilot to travel to specific point
 - handling of errors
+m multithreading protection (for GlobalURNG)
+
 
 * Hashing
 - SHA1 - unfinalized hashing, incomplete bytes
@@ -245,7 +258,7 @@ QUESTIONS
 - PI, G and other constant - where they should hold?
 
 
-CONTROL:
+CONTROL on RealSpace main:
 A/D - rotate
 W/S - thrust
 Space - breaking (autopilot) relative to distant stars
@@ -257,6 +270,7 @@ F - jump to FTL (FTL works only if gravity < -5.75 dgr)
 J - jump to some system (for debug only)
 X - dump galaxy coordinates into log
 F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
++/-/* - activate PlusMinus Engine (* - third option)
 
 CONTROL on map:
 W/A/S/D - pan
@@ -266,6 +280,10 @@ Esc - back to RealSpace
 CONTROL on FTL:
 Esc - drop out to RealSpace
 X - dump galaxy coordinates into log
+
+CONTROL on QuasiSpace (PlusMinus):
+X - dump PlusMinus debug info into log
+
 
 */
 
@@ -308,8 +326,10 @@ using namespace irr;
 //Light-year, exact value
 #define LIGHTYEAR 9460730472.5808
 
-//Radius of star system in light-years (used to enter/leave star system check)
+//Radius of star system in light-years (used for enter star system check, for limit orbits of planets and so on)
 #define STAR_SYSTEM_RADIUS 0.1
+//and this one only for checking leaving
+#define STAR_SYSTEM_RADIUS_LEAVE 0.101
 
 //Density of stars outside galaxy outer radius
 //Value 1.5e-7 gives ~2600 stars in whole galaxy quad and ~1000 stars outside r=57000 ly
@@ -375,6 +395,7 @@ class InfoFTL;
 class SHA1;
 class DeterminedRandomGenerator;
 class UndeterminedRandomGenerator;
+class GlobalURNG;
 class StarComponent;
 
 /*
@@ -565,12 +586,14 @@ class GamePhysics {
 		bool IsInterstellar() {return isInterstellar;}
 		vector2d GetGalaxyCoordinatesOfCenter() {return galaxyCoordinatesOfCenter;}
 		vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
+		DG_Game* GetRoot() {return gameRoot;}
 
 		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
 		void SetGalaxyQuadrant(vector2ds newQuadrant) {galaxyQuadrant = newQuadrant;}
 		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
 		void SetPlayerShip(PlayerShip* newPlayerShip) {playerShip = newPlayerShip;}
 		void SetTimeSpeed(f64 newSpeed);
+		void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
 
 		void Update(f64 time);
 		void UpdateNodes(SpaceObject* centerSceneObject);
@@ -578,6 +601,7 @@ class GamePhysics {
 		void UpdateMarkers(f64 cameraDistance);
 		void UpdateMapMarkers(f64 mapScale);
 		
+
 		vector3d GetGravityAcceleration(vector3d location);
 		GravityInfo* GetGravityInfo(vector3d location);
 		
@@ -598,6 +622,7 @@ class GamePhysics {
 		f64 maxGravityCheckRadiusSQ; //if object is farther from this radius, then we could skip checking of gravity for FTL, radius squared as it is much easier to check this way
 		f64 timeSpeed;//speed of time going, 1.0 for normal, 100 for faster
 
+		DG_Game* gameRoot;
 		PlayerShip* playerShip;
 		core::array<SpaceObject*> listObjects;
 		vector2d galaxyCoordinatesOfCenter;
@@ -873,6 +898,9 @@ public:
 	void BreakQuasiSpace();
 	void UpdateQuasiSpace(f64 time, Galaxy* galaxy);
 
+
+	void DebugPrint_QuasiSpace();
+
 private:
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
@@ -892,6 +920,7 @@ public:
 	//void AddNearStarSystems(GamePhysics * gamePhysics);
 	void AddNearStarSystems(MapSpaceView* mapView);//Add markers of near star system to MapView
 	u32 CheckStarPresence(vector2ds coordinates);//Check only presence of star in quadrant
+	u32 IsInGrid(vector2ds coordinates);//Check coordinates for being inside 131072x131072 grid
 	GalaxyStarSystem* GetStartStarSystem(); //Get star system of player start
 	void UpdatePlayerLocation(vector2d coordinates);//For updating cache of stars
 
@@ -1047,6 +1076,18 @@ private:
 
 	void GenerateBlock();
 	void RehashBlock();
+};
+
+//(kind a) Singleton for UndeterminedRandomGenerator
+class GlobalURNG : UndeterminedRandomGenerator
+{
+public:
+	static UndeterminedRandomGenerator &Instance() {
+		//& is needed for updating objIntance by further calls, and a not copy
+		static UndeterminedRandomGenerator objIntance;
+		return objIntance;
+	}
+	
 };
 
 //Holds info on star or composite component of star system
@@ -2437,6 +2478,12 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 	}
 
+	if (eventReceiver->IsKeyPressed(irr::KEY_MULTIPLY))
+	{
+		quasiDir = 0;
+		goto JumpToQuasi;
+	}
+
 	if (eventReceiver->IsKeyPressed(irr::KEY_MINUS) || eventReceiver->IsKeyPressed(irr::KEY_SUBTRACT))
 	{
 		quasiDir = -1;
@@ -2447,9 +2494,11 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	{
 		quasiDir = 1;
 JumpToQuasi:
-		//TODO: check for outside galaxy
-
-		if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
+		if (gameRoot->GetGalaxy()->IsInGrid(playerShip->GetGalaxyQuadrant())!=1)
+		{//outside galaxy grid
+			DisplayMessage(L"PlusMinus Engine does not actived");
+		}
+		else if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
 		{
 			playerShip->JumpToQuasiSpace(quasiDir);
 			if (quasiDir==1)
@@ -3034,19 +3083,16 @@ void QuasiSpaceView::Update(f64 frameDeltaTime)
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
 	{
-		text_string galaxyCoords=L"Coordinates: ";
-		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().X,L"%.010f");
-		galaxyCoords+=L", ";
-		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
-		DisplayMessage(galaxyCoords);
+		playerShip->DebugPrint_QuasiSpace();
 	}
 
+	/*
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
 	{
 		DisplayMessage(L"Manual exit from QuasiSpace");
 		playerShip->BreakQuasiSpace();
 		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
-	}
+	}*/
 
 	gamePhysics->Update(frameDeltaTime);
 
@@ -3084,8 +3130,9 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	gamePhysics->globalTime = 0;
 	gamePhysics->SetGalaxyCoordinatesOfCenter(startGalaxyCoord);
 	gamePhysics->SetGalaxyQuadrant(currentStarSystem->GetGalaxyQuadrant());//just in case
-	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS*STAR_SYSTEM_RADIUS*LIGHTYEAR*LIGHTYEAR);
+	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS_LEAVE*STAR_SYSTEM_RADIUS_LEAVE*LIGHTYEAR*LIGHTYEAR);
 	gamePhysics->SetTimeSpeed(1.0);
+	gamePhysics->SetRoot(this);
 
 	viewStack.clear();
 
@@ -3129,7 +3176,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	playerShip->SetGravity(false,true);
 	playerShip->SetMotionType(SpaceObject::MOTION_NAVIGATION);
 	playerShip->SetRotation(90);
-	playerShip->SetSpeed(vector3d(-320.28,0,0));
+	playerShip->SetSpeed(vector3d(0,0,0));
 	playerShip->SetMaxThrust(100000,150);
 	playerShip->SetName(L"Player");
 	playerShip->SetMaxFTLGravity(0.003138);
@@ -3145,7 +3192,8 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	gamePhysics->GoStarSystem();
 	GoStarSystem(currentStarSystem);
 
-	playerShip->SetPosition(vector3d(0,1300,0));
+	playerShip->SetPosition(vector3d(LIGHTYEAR*0.07,0,0));
+
 
 	/*
 	gamePhysics->GoStarSystem();
@@ -3531,8 +3579,11 @@ void PlayerShip::JumpToQuasiSpace(s32 direction)
 
 	plusMinusDirection = direction;
 	if (direction==0)
-	{
-		plusMinusDirection = 2;//TODO: or minus 2
+	{//Third option - two times at random direction
+		if (GlobalURNG::Instance().GenerateByte()<128)
+			plusMinusDirection = -2;//two times backward
+		else
+			plusMinusDirection = 2;//two times forward
 	}
 	motionType = MOTION_PLUSMINUS;
 	speed=vector3d(0);
@@ -3576,14 +3627,36 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 		galaxyQuadrant = galaxy->MoveByPlusMinus(galaxyQuadrant,plusMinusDirection);
 		if (galaxy->CheckStarPresence(galaxyQuadrant)!=0)
 		{
-			GalaxyStarSystem* exitTo = galaxy->GetStarSystem(galaxyQuadrant);
-			//galaxyCoordinates = exitTo->GetGalaxyCoordinates();
-			physics->SetGalaxyCoordinatesOfCenter(exitTo->GetGalaxyCoordinates());
-			position = vector3d(0);
-			motionType = MOTION_NAVIGATION;
-			speed=vector3d(0);
-			wprintf(L" - PlusMinus finished after %i steps\r\n",plusMinusCounter);
-			return;
+			//star found
+			if (plusMinusDirection<-1)
+			{//several steps backward
+				plusMinusDirection++;
+			}
+			else if (plusMinusDirection>1)
+			{//several steps forward
+				plusMinusDirection--;
+			}
+			else
+			{//only/last step finished
+				f64 angle;
+				wprintf(L" - PlusMinus finished after %i steps\r\n",plusMinusCounter);
+
+				GalaxyStarSystem* exitTo = galaxy->GetStarSystem(galaxyQuadrant);//get obj with basic info about system where we will exit
+				galaxyCoordinates = exitTo->GetGalaxyCoordinates();//get galaxy coords
+				physics->GetRoot()->GetGalaxy()->UpdatePlayerLocation(galaxyCoordinates);//update galaxy for our new location
+				physics->GetRoot()->GoStarSystem(exitTo);//force game to go player to this star systems (includes generation of planets and so on)
+				physics->Update(0);//update planets and e.t.c. to their locations
+
+				//TODO: Find random location for exit from QuasiSpace
+
+				//random angle
+				angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;
+
+				position = vector3d(LIGHTYEAR*0.07*cos(angle),LIGHTYEAR*0.07*sin(angle),0);//dumb "far from planets" location, 0.07 ly is beyond planet generation limit
+				motionType = MOTION_NAVIGATION;
+				speed=vector3d(0);
+				return;
+			}
 		}
 		plusMinusCounter++;
 		
@@ -3596,6 +3669,11 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 
 		plusMinusTime-=0.0001;
 	}
+}
+
+void PlayerShip::DebugPrint_QuasiSpace()
+{
+	wprintf(L" - PlusMinus is on %i step around (%i,%i), direction is %i\r\n",plusMinusCounter,galaxyQuadrant.X,galaxyQuadrant.Y,plusMinusDirection);
 }
 
 //#########################################################################
@@ -3935,6 +4013,14 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 
 }
 
+u32 Galaxy::IsInGrid(vector2ds coordinates)
+{
+	if (coordinates.X<-65536 || coordinates.X>65535 || coordinates.Y<-65536 || coordinates.Y>65535)
+		return 0;//outside 131072x131072 grid
+	return 1;
+}
+
+//1 - present, 0 - not
 u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 {
 	f64 starDensity;
@@ -3942,8 +4028,9 @@ u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 	s32 x,y;
 
 	//vector2d coords = vector2d(coordinates.X,coordinates.Y);
-	if (coordinates.X<-65536 || coordinates.X>65535 || coordinates.Y<-65536 || coordinates.Y>65535)
-		return 0;//no stars outside 131072x131072 quad
+	//if (coordinates.X<-65536 || coordinates.X>65535 || coordinates.Y<-65536 || coordinates.Y>65535)
+	if (IsInGrid(coordinates)!=1)
+		return 0;//no stars outside 131072x131072 grid
 
 	x = (coordinates.X+65536)>>6;//divide by 64
 	y = (coordinates.Y+65536)>>6;//divide by 64
@@ -4121,17 +4208,19 @@ GalaxyStarSystem* Galaxy::DebugJump()
 
 	vector2ds randomLocation;
 	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,knownStarsCenter.X,knownStarsCenter.Y);
-	galaxyRNG->SetOffset(777);
+	galaxyRNG->SetOffset(777+debugStarCounter);
 
 	for (u32 i=0;i<1000;i++)
 	{
 		randomLocation.X = -65536 + galaxyRNG->GenerateByte();
 		randomLocation.X += galaxyRNG->GenerateByte()*256;
-		randomLocation.X += (galaxyRNG->GenerateByte()&1)*65536;
+		randomLocation.X += (galaxyRNG->GenerateByte()&1)*65536;//last bit
 
 		randomLocation.Y = -65536 + galaxyRNG->GenerateByte();
 		randomLocation.Y += galaxyRNG->GenerateByte()*256;
-		randomLocation.Y += (galaxyRNG->GenerateByte()&1)*65536;
+		randomLocation.Y += (galaxyRNG->GenerateByte()&1)*65536;//last bit
+
+		debugStarCounter+=6;//this allows to use this function again with another random seq
 
 		if (CheckStarPresence(randomLocation)==1)
 		{
@@ -4416,7 +4505,7 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 
 	rootComponent->type = 0;//yet is composite
 	rootComponent->mass = starMass;
-	rootComponent->outerOrbitLimit = LIGHTYEAR*0.05;
+	rootComponent->outerOrbitLimit = STAR_SYSTEM_RADIUS*LIGHTYEAR*0.5;
 	rootComponent->innerOrbitLimit = 0;
 	rootComponent->radius = 0;
 	rootComponent->colorIndexBV = 0;
@@ -4891,6 +4980,15 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 
 	planetOrbit = planetOrbit * (1.0+number*0.4);//k = 1.0 - 103.0
 
+
+	//moon orbit may not exceed inner limit for planet system
+	moonOrbitLimit = planetOrbit - component->innerOrbitLimit;
+
+	//moon orbit may not exceed outer limit for planet system
+	if ((planetOrbit + moonOrbitLimit)>component->outerOrbitLimit)
+		moonOrbitLimit = component->outerOrbitLimit - planetOrbit;
+
+
 	//planet generation cycle
 	for (i = 1;;) //exit from the middle
 	{
@@ -4966,22 +5064,15 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 
 		{
 			wchar_t tmp[255];
-			//swprintf(tmp, 255, L"Planet %i", planetIndex);
 			planetIndex++;
-			swprintf(tmp, 255, L"Planet %c", 97+planetIndex);//starting from b
+			swprintf(tmp, 255, L"Planet %i", planetIndex);
+			//swprintf(tmp, 255, L"Planet %c", 97+planetIndex);//starting from b - "Planet b" [Hessman 2010 proposal scheme] 
 			planet->SetName(tmp);
 		}
 
 		planet->SetMass(planetMass);//in 10^24 kg
 		planet->SetGravity(true,false);
 		i++;
-
-		//moon orbit may not exceed inner limit for planet system
-		moonOrbitLimit = planetOrbit - component->innerOrbitLimit;
-
-		//moon orbit may not exceed outer limit for planet system
-		if ((planetOrbit + moonOrbitLimit)>component->outerOrbitLimit)
-			moonOrbitLimit = component->outerOrbitLimit - planetOrbit;
 
 		moonOrbitRadius = 5000 + 3*planetRadius;
 
@@ -5015,8 +5106,8 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 			moon->SetGravity(true,false);
 			{
 				wchar_t tmp[255];
-				swprintf(tmp, 255, L"Moon %c%i", 97+planetIndex,(j+2));
-				//swprintf(tmp, 255, L"Moon %i%c", planetIndex,97+j);
+				//swprintf(tmp, 255, L"Moon %c%i", 97+planetIndex,(j+2)); // "Moon c2" [Hessman 2010 proposal scheme] 
+				swprintf(tmp, 255, L"Moon %i%c", planetIndex,97+j);
 
 				moon->SetName(tmp);
 			}
@@ -5357,7 +5448,7 @@ void UndeterminedRandomGenerator::GenerateBlock()
 {
 	u32 pos;
 	u64 systemTime;
-	u32 systemRandom = rand();
+	u32 systemRandom;
 	u64 memoryAddress;
 
 	// random sources:
@@ -5366,6 +5457,7 @@ void UndeterminedRandomGenerator::GenerateBlock()
 	// 24-31  time [8]
 	// 32-35  systemRandom [4]
 	// 36-43  address of time variable [8]
+	// 44-63  (RFU)
 
 	counter++;
 	pos = blockLength;
@@ -5374,6 +5466,7 @@ void UndeterminedRandomGenerator::GenerateBlock()
 	systemTime = (u64)time(0);
 	memcpy(hashBuffer+pos,&systemTime,8);pos+=8;
 
+	systemRandom = rand();
 	memcpy(hashBuffer+pos,&systemRandom,4);pos+=4;
 
 	memoryAddress = (u64)&systemTime;
@@ -5442,6 +5535,9 @@ int main(int ArgumentCount, char **Arguments) {
 		printf("Determined generator works fine\r\n");
 		break;
 	}
+
+	//Init and semi-test
+	GlobalURNG::Instance().GenerateByte();
 
 
 	DG_Game * game = new DG_Game();
