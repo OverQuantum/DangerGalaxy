@@ -154,6 +154,8 @@ coding demo1:
 111013: CHG: Switch to star system on exit from PlusMinus moved into UpdateQuasiSpace
 111013: FIX: Leaving star system moved from 0.1 to 0.101 ly from center (to make hysteresis)
 111013: CHG: Start is now 0.07 ly from star system center
+111014: FIX: PlusMinus now use quadrant of star system, if player is not interstellar
+111014: CHG: FindRandomLocationWithSpecificGravity
 
 
 
@@ -190,8 +192,10 @@ DONE:
 TODO:
 
 * MAIN PLAN
+- BUG: atan2 on Linux
 !- PlusMinus Engine
  - entering to starsystem at random location on specific gravity strength
+ -! check for gravity at all
 - wormhole network
 - stargate system
 
@@ -600,6 +604,10 @@ class GamePhysics {
 		void AddObject(SpaceObject* newObject);
 		void UpdateMarkers(f64 cameraDistance);
 		void UpdateMapMarkers(f64 mapScale);
+
+		s32 IsGravity();
+
+		vector3d FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 gravityMax);
 		
 
 		vector3d GetGravityAcceleration(vector3d location);
@@ -1578,9 +1586,10 @@ vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 	f64 distance = vectorDirection.getLength();
 	if (distance<gravityMinRadius)
 	{
-		//return vector3d(0);//simply nothing
+		//Inside object - linear from radius to gravity on surface
 		return G_CONSTANT*vectorDirection*mass/(gravityMinRadius*gravityMinRadius*gravityMinRadius);
 	}
+	//Outside object - by Newton's law
 	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance);
 }
 
@@ -1712,6 +1721,70 @@ vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 	return acceleration;
 }
 
+//Find random location where log of gravity is in range (gravityMin, gravityMax)
+//Iterative solving of equation F(x) = a by finding slope of F(x)
+vector3d GamePhysics::FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 gravityMax)
+{
+	u32 i,j;
+	vector3d result;
+	vector3d gravity;
+	f64 grav,gravSQ,grav2SQ;
+	f64 pseudoRadius;
+	f64 gravityDest;
+
+	pseudoRadius = LIGHTYEAR*STAR_SYSTEM_RADIUS*0.75;
+
+	//make 5 attempts
+	for (j=0;j<5;j++)
+	{
+		//make start location of iterations
+		f64 angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;//random angle
+		result = vector3d(pseudoRadius*cos(angle),pseudoRadius*sin(angle),0);
+
+		//TODO: check for gravity at all
+
+		//Random desirable gravity - somewhere in range (gravityMin, gravityMax)
+		//Simple average of gravityMin and gravityMax is not good, as algorithm will very often will find solution at once
+		gravityDest = gravityMin + GlobalURNG::Instance().GenerateByte() * (gravityMax-gravityMin)/255.0;
+		
+		//100 iterations (2 works in >50%, never seen >4)
+		for (i=0;i<100;i++)
+		{
+			//Get gravity force
+			gravity = GetGravityAcceleration(result);
+
+			//Calc square of modulus
+			gravSQ = gravity.getLengthSQ();
+
+			//Calc log of modulus
+			grav = 0.5*log(gravSQ);
+
+			//wprintf(L" * FRLWSG: %f\r\n",grav);//print intermediate gravity
+			
+			//Check for result
+			if (grav>=gravityMin && grav<=gravityMax)
+				return result;
+
+			//Normalization of vector (basic .normalize() does not work due to very small value )
+			gravity /= gravity.getLength();
+
+			//Get gravity force in 1 unit aside
+			grav2SQ = GetGravityAcceleration(result+gravity).getLengthSQ();
+
+			gravSQ = pow(gravSQ,-0.25);//pre-calc value which is required twice
+
+			//Shift location by distance, calculcated from 3 gravity values: current, 1 unit aside, and desired
+			//Direction of shift is defined by gravity vector
+			//In case of 1 gravity body, this will give exact solution
+			result += gravity*(exp(-0.5*gravityDest)-gravSQ)/(pow(grav2SQ,-0.25)-gravSQ);
+
+		}
+	}
+	//Very hard star system, solution not found in 5x100 iterations
+	wprintf(L"WARNING: FRLWSG does not finished with solution, grav=%f\r\n",grav);
+	return result;
+}
+
 GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 {
 	u32 i;
@@ -1725,12 +1798,15 @@ GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 	SpaceObject* secondMaxGravityObject =0;
 	//f64 orbitSemimajorAxis, orbitEccentricity;
 
+
 	for (i=0;i<listObjects.size();i++)
 		if (listObjects[i]->IsEmittingGravity())
 		{
 			//vector3d vectorDirection = SpaceObjectList[i]->GetPosition()-location;
 			//f64 distance = vectorDirection.getLength();
 			//gravity = (vectorDirection*SpaceObjectList[i]->GetMass()/(distance*distance*distance)).getLength();
+
+			//TODO: speedup by getLengthSQ. sqrt() can by applied at the end
 			gravity = listObjects[i]->GetGravityAcceleration(location).getLength();
 			if (gravity>maxGravity)
 			{
@@ -3486,6 +3562,8 @@ void DG_Game::InternalAcviateView(ViewType newView)
 		break;
 	case VIEW_SECTOR_MAP:
 		SectorMap->Activate();
+		SectorMap->cameraDistanceDegree = RealSpace->cameraDistanceDegree+732.4;//match zoom of map to RealSpace
+		SectorMap->UpdateCameraDistance();
 		activeView = SectorMap;
 		break;
 	case VIEW_FTL:
@@ -3574,6 +3652,8 @@ void PlayerShip::UpdateGalaxyCoordinates()
 void PlayerShip::JumpToQuasiSpace(s32 direction)
 {
 	plusMinusCounter = 0;
+	galaxyQuadrant = physics->GetGalaxyQuadrant();//ship may be outside quadrant of starsystem (if starsystem is on the edge of quadrant) counting should goes from quadrant of starsystem
+
 	//if (abs(galaxyQuadrant.Y)<100)
 	//	galaxyQuadrant = vector2ds(-65536,65535);//DEBUG
 
@@ -3638,7 +3718,7 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 			}
 			else
 			{//only/last step finished
-				f64 angle;
+				//f64 angle;
 				wprintf(L" - PlusMinus finished after %i steps\r\n",plusMinusCounter);
 
 				GalaxyStarSystem* exitTo = galaxy->GetStarSystem(galaxyQuadrant);//get obj with basic info about system where we will exit
@@ -3650,9 +3730,9 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 				//TODO: Find random location for exit from QuasiSpace
 
 				//random angle
-				angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;
-
-				position = vector3d(LIGHTYEAR*0.07*cos(angle),LIGHTYEAR*0.07*sin(angle),0);//dumb "far from planets" location, 0.07 ly is beyond planet generation limit
+				//angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;
+				//position = vector3d(LIGHTYEAR*0.07*cos(angle),LIGHTYEAR*0.07*sin(angle),0);//dumb "far from planets" location, 0.07 ly is beyond planet generation limit
+				position = physics->FindRandomLocationWithSpecificGravity(-15.49,-15.12);
 				motionType = MOTION_NAVIGATION;
 				speed=vector3d(0);
 				return;
