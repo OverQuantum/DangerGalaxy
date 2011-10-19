@@ -156,6 +156,9 @@ coding demo1:
 111013: CHG: Start is now 0.07 ly from star system center
 111014: FIX: PlusMinus now use quadrant of star system, if player is not interstellar
 111014: CHG: FindRandomLocationWithSpecificGravity
+111015: FIX: unused variables, moonMass
+111019: CHG: added yield() for lowering CPU load
+111019: ADD: slow first jumps on PlusMinus and fast later
 
 
 
@@ -194,7 +197,7 @@ TODO:
 * MAIN PLAN
 - BUG: atan2 on Linux
 !- PlusMinus Engine
- - entering to starsystem at random location on specific gravity strength
+ -?? entering to starsystem at random location on specific gravity strength
  -! check for gravity at all
 - wormhole network
 - stargate system
@@ -240,6 +243,7 @@ m remove overlapping of labels on map (how?)
 -3SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 - autopilot to travel to specific point
 - handling of errors
+m option to turnoff yield
 m multithreading protection (for GlobalURNG)
 
 
@@ -344,7 +348,7 @@ using namespace irr;
 //0.02 gives 50 fps
 #define FRAME_TIME_MAX 0.02
 
-#define FRAME_TIME_MIN 0.001
+//#define FRAME_TIME_MIN 0.001
 
 
 //types
@@ -914,8 +918,10 @@ private:
 	vector2ds galaxyQuadrant;
 
 	s32 plusMinusDirection;//+1 for Plus, -1 for Minus (+2/-2 on random)
-	f64 plusMinusTime;
-	s32 plusMinusCounter;//DEBUG
+	f64 plusMinusTime;//accumulated time for PlusMinus calculation
+	f64 plusMinusStep;//step (i.e. speed) of PlusMinus calculation
+	s32 plusMinusCounter;//counter of jumps
+	s32 plusMinusDoubling;//counter value on which we should double speed of PlusMinus calculation
 };
 
 //Galaxy - hold main information about whole Galaxy
@@ -1759,7 +1765,7 @@ vector3d GamePhysics::FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 
 			//Calc log of modulus
 			grav = 0.5*log(gravSQ);
 
-			//wprintf(L" * FRLWSG: %f\r\n",grav);//print intermediate gravity
+			wprintf(L" * FRLWSG: %f\r\n",grav);//print intermediate gravity
 			
 			//Check for result
 			if (grav>=gravityMin && grav<=gravityMax)
@@ -1879,7 +1885,7 @@ InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end, f64 gravityLim
 			break;
 
 		vector3d moving = end-start;
-		vector3d perpendicularMoving = vector3d(moving.Y,-moving.X,0);
+		//vector3d perpendicularMoving = vector3d(moving.Y,-moving.X,0);
 		vector3d toObject;
 		f64 criticalRadiusSQToMass = G_CONSTANT/gravityLimit;
 		f64 criticalRadiusSQ;
@@ -3236,7 +3242,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	//driver->setTextureCreationFlag(irr::video::ETCF_ALWAYS_32_BIT,true);
 
-	video::ECOLOR_FORMAT cf2 =  driver->getColorFormat();
+	//video::ECOLOR_FORMAT cf2 =  driver->getColorFormat();
 
 	RealSpace = new RealSpaceView();
 	RealSpace->SetRoot(this);
@@ -3334,11 +3340,12 @@ void DG_Game::Update() {
 	const u32 now = device->getTimer()->getTime();
 	f64 frameDeltaTime = (f64)(now - then) * 0.001; // Time in seconds
 	
+	/*
 	if (frameDeltaTime<FRAME_TIME_MIN)
 	{
 		device->sleep(1);
 		return;
-	}
+	}*/
 
 
 	then = now;
@@ -3429,6 +3436,9 @@ void DG_Game::Update() {
 		device->setWindowCaption(tmp.c_str());
 		lastFPS = fps;
 	}
+
+	//TODO: option to turn off this "yield"
+	device->yield();
 }
 
 void DG_Game::Close() {
@@ -3635,8 +3645,10 @@ PlayerShip::PlayerShip()
 {
 	SpaceObject();
 	plusMinusTime = 0;
+	plusMinusStep = 0.1;
 	plusMinusDirection = 1;
 	plusMinusCounter = 0;
+	plusMinusDoubling = 16;
 	galaxyCoordinates = vector2d(0);
 }
 
@@ -3651,7 +3663,10 @@ void PlayerShip::UpdateGalaxyCoordinates()
 
 void PlayerShip::JumpToQuasiSpace(s32 direction)
 {
+	plusMinusTime = 0;
+	plusMinusStep = 0.1;
 	plusMinusCounter = 0;
+	plusMinusDoubling = 16;
 	galaxyQuadrant = physics->GetGalaxyQuadrant();//ship may be outside quadrant of starsystem (if starsystem is on the edge of quadrant) counting should goes from quadrant of starsystem
 
 	//if (abs(galaxyQuadrant.Y)<100)
@@ -3702,7 +3717,7 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 	*/
 
 	plusMinusTime+=time;
-	while (plusMinusTime>0.0001) //10k steps per second of player
+	while (plusMinusTime>plusMinusStep)
 	{
 		galaxyQuadrant = galaxy->MoveByPlusMinus(galaxyQuadrant,plusMinusDirection);
 		if (galaxy->CheckStarPresence(galaxyQuadrant)!=0)
@@ -3732,13 +3747,27 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 				//random angle
 				//angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;
 				//position = vector3d(LIGHTYEAR*0.07*cos(angle),LIGHTYEAR*0.07*sin(angle),0);//dumb "far from planets" location, 0.07 ly is beyond planet generation limit
-				position = physics->FindRandomLocationWithSpecificGravity(-15.49,-15.12);
+				//position = physics->FindRandomLocationWithSpecificGravity(-15.49,-15.12);
+				position = physics->FindRandomLocationWithSpecificGravity(-7.0,-6.0);
+				//-15.49 dgr is the gravity on surface of ice ball with m=1300 kg and radius = 68 cm
+				//-15.12 dgr on dist = 0.1 ly is making star of 1829 solar masses
+				//So with except to galaxy-center black hole, finding such gravity inside star system should not be a problem
+
 				motionType = MOTION_NAVIGATION;
 				speed=vector3d(0);
 				return;
 			}
 		}
 		plusMinusCounter++;
+
+		if (plusMinusCounter>plusMinusDoubling)
+		{//Speed up counting - for far jumps
+			if (plusMinusStep>0.00001) //limit speed to 50k jumps/second
+			{
+				plusMinusDoubling*=2;
+				plusMinusStep*=0.5;
+			}
+		}
 		
 		/*text_string galaxyCoords=L" - PlusMinus goes to ";
 		galaxyCoords+=galaxyQuadrant.X;
@@ -3747,7 +3776,7 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 		
 		//wprintf(L" - PlusMinus goes to %i,%i\r\n",galaxyQuadrant.X,galaxyQuadrant.Y);
 
-		plusMinusTime-=0.0001;
+		plusMinusTime-=plusMinusStep;
 	}
 }
 
@@ -4384,10 +4413,12 @@ s32 Galaxy::HilbertCurveDirection(s32 x, s32 y, s32 direction)
 {
 	s32 k,p;
 	if (x==0 && y==0) //main line
+	{
 		if (direction<0)
 			return 1;//CCW
 		else
 			return 0;//CW
+	}
 
 	//TODO: comment and optimize calculations
 
@@ -4790,7 +4821,7 @@ void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 m
 
 				moon = resourceManager->MakePlanet(moonRadius);
 				moon->SetOrbitalParams(planet,moonOrbitRadius,moonOrbitPeriod,moonOrbitPhase);
-				moon->SetMass(.0123*5.9736);
+				moon->SetMass(moonMass);
 				moon->SetGravity(true,false);
 				{
 					wchar_t tmp[255];
@@ -5182,7 +5213,7 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 
 			moon = resourceManager->MakePlanet(moonRadius);
 			moon->SetOrbitalParams(planet,moonOrbitRadius,moonOrbitPeriod,moonOrbitPhase);
-			moon->SetMass(.0123*5.9736);
+			moon->SetMass(moonMass);
 			moon->SetGravity(true,false);
 			{
 				wchar_t tmp[255];
@@ -5311,7 +5342,7 @@ u32 SHA1::ProcessArrayFinal(u8* data, u32 dataLen)
 {
 	u32 buffer[32];
 	u32 i,j,dlen2,dlen3;
-	u32 * data32=(u32*)data;
+	//u32 * data32=(u32*)data;
 	u8 * buffer_c=(u8*)buffer;
 	u8 * data2=(u8*)(buffer+16);
 	//u32 fulllen;
