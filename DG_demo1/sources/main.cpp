@@ -159,6 +159,12 @@ coding demo1:
 111015: FIX: unused variables, moonMass
 111019: CHG: added yield() for lowering CPU load
 111019: ADD: slow first jumps on PlusMinus and fast later
+111021: exp: FindRandomLocationWithSpecificXGravity
+
+111107: CHG: PlusMinus works by XGravity (-36..-35)
+111109: CHG: switch to star3 texture 
+111109: ADD: minor logging at start
+111109: ADD: very basic wormholes (visible only)
 
 
 
@@ -195,11 +201,13 @@ DONE:
 TODO:
 
 * MAIN PLAN
-- BUG: atan2 on Linux
-!- PlusMinus Engine
- -?? entering to starsystem at random location on specific gravity strength
- -! check for gravity at all
+- BUG: .normalize() on Linux (??)
+- BUG: memory leak somewhere on star system generation or exiting/entering
 - wormhole network
+  - advanced mesh - visible from a far
+  - checking pass by ship
+  - go to destination system
+  - some good triangulation
 - stargate system
 
 
@@ -227,6 +235,11 @@ TODO:
 - somthing to display then ship inside stars (?)
 - better speed indicator
 - exponential fading of light sources (?)
+
+
+* PlusMinus
+- Entering to system after PlusMinus Engine - check for gravity at all
+
 
 
 * Map
@@ -347,6 +360,9 @@ using namespace irr;
 //Limits low FPS and slowdowns game if lower
 //0.02 gives 50 fps
 #define FRAME_TIME_MAX 0.02
+
+//Maximum x-gravity for PlusMinus
+#define XGRAVITY_MAX_PLUSMINUS -35
 
 //#define FRAME_TIME_MIN 0.001
 
@@ -535,6 +551,7 @@ class SpaceObject {
 		//void SetRotationSpeed(f64 newRotSpeed) {rotationSpeed = newRotSpeed;}
 
 		vector3d GetGravityAcceleration(vector3d location);
+		vector3d GetXGravityAcceleration(vector3d location);
 		void SetControl(f64 newValue, ControlType type);
 
 		void AutopilotBreak();
@@ -612,13 +629,16 @@ class GamePhysics {
 		s32 IsGravity();
 
 		vector3d FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 gravityMax);
+		vector3d FindRandomLocationWithSpecificXGravity(f64 gravityMin, f64 gravityMax);
 		
 
 		vector3d GetGravityAcceleration(vector3d location);
+		vector3d GetXGravityAcceleration(vector3d location);
 		GravityInfo* GetGravityInfo(vector3d location);
 		
 		//bool IsFTLPossible(vector3d location);
 		bool IsFTLPossible(vector3d location, f64 gravityLimit);
+		bool IsPlusMinusPossible(vector3d location);
 
 		//InfoFTL* CheckFTLBreak(vector3d start, vector3d end);
 		InfoFTL* CheckFTLBreak(vector3d start, vector3d end, f64 gravityLimit);
@@ -657,6 +677,7 @@ class ResourceManager
 		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
 		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
 		SpaceObject* MakeBarycenter();
+		SpaceObject* MakeWormhole();
 		SpaceObject* MakeShip();
 		SpaceObject* LoadNodesForShip(SpaceObject* ship);
 		void AddMarker(SpaceObject* toObject, u32 type);
@@ -986,12 +1007,11 @@ public:
 	void GenerateStar();
 	void SetName(text_string newName) {name = newName;}
 
-	void GenerateStarSystem(ResourceManager* resourceManager);
+	void GenerateStarSystem(ResourceManager* resourceManager, Galaxy* galaxy);
 
 	void GenerateComponent(ResourceManager* resourceManager, f64 mass, f64 sizeLimit, SpaceObject** rootObject);
 
 	void GenerateComponent2(StarComponent* component);
-	SpaceObject* FinalizeComponent(ResourceManager* resourceManager, StarComponent* component);
 private:
 	u32 componentIndex;//for naming stars in systems
 	u32 planetIndex;//for numbering planets
@@ -999,6 +1019,10 @@ private:
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
 	text_string name;
+
+	SpaceObject* FinalizeComponent(ResourceManager* resourceManager, StarComponent* component);
+	void GenerateWormholes(ResourceManager* resourceManager, StarComponent* component, Galaxy* galaxy);
+
 };
 
 //Keep information about FTL fly over line segment
@@ -1114,6 +1138,7 @@ public:
 	f64 luminosity;//luminosity of object, in Solar's, N/A for composite
 	f64 innerOrbitLimit;//inner limit for orbiting objects
 	f64 outerOrbitLimit;//outer limit for orbiting objects
+	f64 maxOrbiting;//max distance for orbiting objects
 	//text_string spectralClass;
 	f64 colorIndexBV;//  en.wikipedia.org/wiki/B-V_color,  N/A for composite
 	f64 subComponentsOrbit; //distance between subcomponents
@@ -1599,6 +1624,21 @@ vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance);
 }
 
+//X-gravity = G*M/R^4
+vector3d SpaceObject::GetXGravityAcceleration(vector3d location)
+{
+	vector3d vectorDirection = position-location;
+	f64 distance = vectorDirection.getLength();
+	if (distance<gravityMinRadius)
+	{
+		//Inside object - very big
+		return G_CONSTANT*vectorDirection*mass;
+	}
+	//Outside object - G*M/R*R*R*R
+	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance*distance*distance);
+}
+
+
 //Breaking relative to distant-stars
 void SpaceObject::AutopilotOrbiting()
 {
@@ -1727,6 +1767,19 @@ vector3d GamePhysics::GetGravityAcceleration(vector3d location)
 	return acceleration;
 }
 
+vector3d GamePhysics::GetXGravityAcceleration(vector3d location)
+{
+	u32 i;
+	vector3d acceleration = vector3d(0,0,0);
+	for (i=0;i<listObjects.size();i++)
+		if (listObjects[i]->IsEmittingGravity())
+		{
+			acceleration += listObjects[i]->GetXGravityAcceleration(location);
+		}
+	return acceleration;
+}
+
+
 //Find random location where log of gravity is in range (gravityMin, gravityMax)
 //Iterative solving of equation F(x) = a by finding slope of F(x)
 vector3d GamePhysics::FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 gravityMax)
@@ -1790,6 +1843,71 @@ vector3d GamePhysics::FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 
 	wprintf(L"WARNING: FRLWSG does not finished with solution, grav=%f\r\n",grav);
 	return result;
 }
+
+//Find random location where log of X-gravity is in range (gravityMin, gravityMax)
+//Iterative solving of equation F(x) = a by finding slope of F(x)
+vector3d GamePhysics::FindRandomLocationWithSpecificXGravity(f64 gravityMin, f64 gravityMax)
+{
+	u32 i,j;
+	vector3d result;
+	vector3d gravity;
+	f64 grav,gravSQ,grav2SQ;
+	f64 pseudoRadius;
+	f64 gravityDest;
+
+	pseudoRadius = LIGHTYEAR*STAR_SYSTEM_RADIUS*0.75;
+
+	//make 5 attempts
+	for (j=0;j<5;j++)
+	{
+		//make start location of iterations
+		f64 angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;//random angle
+		result = vector3d(pseudoRadius*cos(angle),pseudoRadius*sin(angle),0);
+
+		//TODO: check for gravity at all
+
+		//Random desirable gravity - somewhere in range (gravityMin, gravityMax)
+		//Simple average of gravityMin and gravityMax is not good, as algorithm will very often will find solution at once
+		gravityDest = gravityMin + GlobalURNG::Instance().GenerateByte() * (gravityMax-gravityMin)/255.0;
+		
+		//100 iterations (2 works in >50%, never seen >4)
+		for (i=0;i<100;i++)
+		{
+			//Get gravity force
+			gravity = GetXGravityAcceleration(result);
+
+			//Calc square of modulus
+			gravSQ = gravity.getLengthSQ();
+
+			//Calc log of modulus
+			grav = 0.5*log(gravSQ);
+
+			wprintf(L" * FRLWSXG: %f\r\n",grav);//print intermediate gravity
+			
+			//Check for result
+			if (grav>=gravityMin && grav<=gravityMax)
+				return result;
+
+			//Normalization of vector (basic .normalize() does not work due to very small value )
+			gravity /= gravity.getLength();
+
+			//Get gravity force in 1 unit aside
+			grav2SQ = GetXGravityAcceleration(result+gravity).getLengthSQ();
+
+			gravSQ = pow(gravSQ,-0.125);//pre-calc value which is required twice
+
+			//Shift location by distance, calculcated from 3 gravity values: current, 1 unit aside, and desired
+			//Direction of shift is defined by gravity vector
+			//In case of 1 gravity body, this will give exact solution
+			result += gravity*(exp(-0.25*gravityDest)-gravSQ)/(pow(grav2SQ,-0.125)-gravSQ);
+
+		}
+	}
+	//Very hard star system, solution not found in 5x100 iterations
+	wprintf(L"WARNING: FRLWSXG does not finished with solution, grav=%f\r\n",grav);
+	return result;
+}
+
 
 GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 {
@@ -1862,6 +1980,20 @@ bool GamePhysics::IsFTLPossible(vector3d location, f64 gravityLimit)
 		return false;
 	return true;
 }
+
+bool GamePhysics::IsPlusMinusPossible(vector3d location)
+{
+	if (isInterstellar)
+		return true;
+	if (location.getLengthSQ()>maxGravityCheckRadiusSQ)
+		return true;
+
+	f64 grav = log(GetXGravityAcceleration(location).getLength());
+	if (grav>XGRAVITY_MAX_PLUSMINUS)
+		return false;
+	return true;
+}
+
 
 InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end, f64 gravityLimit)
 {
@@ -2224,6 +2356,22 @@ SpaceObject* ResourceManager::MakeBarycenter()
 	return barycenter;
 }
 
+SpaceObject* ResourceManager::MakeWormhole()
+{
+	SpaceObject* newWormhole = new SpaceObject();
+	SceneNode * sceneNode;
+
+	sceneNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/wormhole.irrmesh"));
+
+	sceneNode->setScale(vector3df(10.0f));
+	newWormhole->SetNode(sceneNode);
+	physics->AddObject(newWormhole);
+	AddMarker(newWormhole,0);
+
+	return newWormhole;
+}
+
+
 SpaceObject* ResourceManager::LoadNodesForShip(SpaceObject* ship)
 {
 	ship->SetNode(NewShipNode());
@@ -2288,7 +2436,7 @@ void ResourceManager::AddMarker(SpaceObject* toObject, u32 type)
 		}
 		else
 		{
-			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star1.bmp"));
+			sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star3.bmp"));
 			sizeMarker  = .07;
 		}
 	}
@@ -2459,7 +2607,6 @@ void RealSpaceView::Init()
 	// This is the movemen speed in units per second.
 	//MOVEMENT_SPEED = 5.0;
 
-	//smgr->saveScene("1.irrexp");
 	cameraDistanceDegree = 1000.0;
 	UpdateCameraDistance();
 }
@@ -2529,11 +2676,20 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	{
 		//Dump galaxy coordinates, in light-years
 		//10 digits after point roughly gives game units, as light-year is roughly 10^10 * 1000 km
-		text_string galaxyCoords=L"Coordinates: ";
-		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().X,L"%.010f");
-		galaxyCoords+=L", ";
-		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
-		DisplayMessage(galaxyCoords);
+		vector3d xgrav = gamePhysics->GetXGravityAcceleration(playerShip->GetPosition());
+		text_string message=L"Player galaxy coordinates: ";
+		message+=print_f64(playerShip->GetGalaxyCoordinates().X,L"%.010f");
+		message+=L", ";
+		message+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
+		DisplayMessage(message);
+		message = L"Player coordinates in system: ";
+		message+=print_f64(playerShip->GetPosition().X,L"%.010f");
+		message+=L", ";
+		message+=print_f64(playerShip->GetPosition().Y,L"%.010f");
+		DisplayMessage(message);
+		message = L"X-gravity: ";
+		message+=print_f64(log(xgrav.getLength()),L"%.03f");
+		DisplayMessage(message);
 	}
 		
 
@@ -2580,7 +2736,7 @@ JumpToQuasi:
 		{//outside galaxy grid
 			DisplayMessage(L"PlusMinus Engine does not actived");
 		}
-		else if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
+		else if (gamePhysics->IsPlusMinusPossible(playerShip->GetPosition()))
 		{
 			playerShip->JumpToQuasiSpace(quasiDir);
 			if (quasiDir==1)
@@ -2788,7 +2944,7 @@ void MapSpaceView::AddObject(SpaceObject* spaceObject)
 	{
 		sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
 		sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
-		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star1.bmp"));
+		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star3.bmp"));
 		//sizeMarker  = .07;
 		sceneNode2->setPosition(vector3df((f32)(position.X*.000001),(f32)(position.Y*.000001),0));
 	}
@@ -2823,7 +2979,7 @@ void MapSpaceView::AddStarMarker(GalaxyStarSystem* starSystem)
 	{
 		sceneNode2->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
 		sceneNode2->setMaterialFlag(video::EMF_LIGHTING, false);
-		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star1.bmp"));
+		sceneNode2->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star3.bmp"));
 		//sizeMarker  = .07;
 		//sceneNode2->setPosition(vector3df((f32)(position.X*.000001*LIGHTYEAR),(f32)(position.Y*.000001*LIGHTYEAR),0));
 	}
@@ -3276,6 +3432,9 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	playerShip->SetPosition(vector3d(LIGHTYEAR*0.07,0,0));
 
+	//smgr->saveScene("1.irrexp");
+
+
 
 	/*
 	gamePhysics->GoStarSystem();
@@ -3539,7 +3698,7 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	}
 
 	//resourceManager->MakeSimpleSystem();
-	toStarSystem->GenerateStarSystem(resourceManager);
+	toStarSystem->GenerateStarSystem(resourceManager, wholeGalaxy);
 
 	currentStarSystem = toStarSystem;
 
@@ -3665,6 +3824,7 @@ void PlayerShip::JumpToQuasiSpace(s32 direction)
 {
 	plusMinusTime = 0;
 	plusMinusStep = 0.1;
+	//plusMinusStep = 0.00001;//DEBUG!
 	plusMinusCounter = 0;
 	plusMinusDoubling = 16;
 	galaxyQuadrant = physics->GetGalaxyQuadrant();//ship may be outside quadrant of starsystem (if starsystem is on the edge of quadrant) counting should goes from quadrant of starsystem
@@ -3748,7 +3908,8 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 				//angle = GlobalURNG::Instance().GenerateByte()*TWO_PI/255.0;
 				//position = vector3d(LIGHTYEAR*0.07*cos(angle),LIGHTYEAR*0.07*sin(angle),0);//dumb "far from planets" location, 0.07 ly is beyond planet generation limit
 				//position = physics->FindRandomLocationWithSpecificGravity(-15.49,-15.12);
-				position = physics->FindRandomLocationWithSpecificGravity(-7.0,-6.0);
+				//position = physics->FindRandomLocationWithSpecificGravity(-7.0,-6.0);
+				position = physics->FindRandomLocationWithSpecificXGravity(-36.0,-35.0);
 				//-15.49 dgr is the gravity on surface of ice ball with m=1300 kg and radius = 68 cm
 				//-15.12 dgr on dist = 0.1 ly is making star of 1829 solar masses
 				//So with except to galaxy-center black hole, finding such gravity inside star system should not be a problem
@@ -3833,6 +3994,8 @@ void Galaxy::Init()
 	starCountEstimation=0;
 	vector2d coords;
 	vector2d coordsArm;
+
+	wprintf(L"DG: Galaxy random generation...\r\n");
 
 	number = galaxyRNG->GenerateByte();
 	if (number<197)
@@ -4567,7 +4730,7 @@ void GalaxyStarSystem::SetSeed(u8* seedData, u32 seedLen)
 	starRNG->SetSeed(seedData,seedLen);
 }
 
-void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
+void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager, Galaxy* galaxy)
 {
 	//It is estimated that approximately 1/3 of the star systems in the Milky Way are binary or multiple, with the remaining 2/3 consisting of single stars.[64]
 	//It is estimated that 50–60% of binary stars are capable of supporting habitable terrestrial planets within stable orbital ranges.[68]
@@ -4595,8 +4758,8 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	//Solar system
 	//Everything not to scale
 
-	//starRNG->SetOffset(1000);
-	starRNG->SetOffset(1001); //__DEBUG
+	starRNG->SetOffset(1000);
+	//starRNG->SetOffset(1001); //__DEBUG
 
 	//Star size: from 0.008 to 2100 solar radii, 2.8 - 1531500 units
 	//Star mass: 0.014 - 265 solar masses, 27598 - 522391320 units
@@ -4616,6 +4779,7 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 
 	rootComponent->type = 0;//yet is composite
 	rootComponent->mass = starMass;
+	rootComponent->maxOrbiting = 0;
 	rootComponent->outerOrbitLimit = STAR_SYSTEM_RADIUS*LIGHTYEAR*0.5;
 	rootComponent->innerOrbitLimit = 0;
 	rootComponent->radius = 0;
@@ -4630,6 +4794,9 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager)
 	root = FinalizeComponent(resourceManager,rootComponent);
 
 	root->SetMotionType(SpaceObject::MOTION_NONE);
+	root->SetPosition(vector3d(0));
+
+	GenerateWormholes(resourceManager,rootComponent,galaxy);
 
 
 
@@ -4948,6 +5115,9 @@ void GalaxyStarSystem::GenerateComponent2(StarComponent *component)
 		component->subComponentA->mass = component->mass*(1.0-fraction);
 		component->subComponentB->mass = component->mass*fraction;
 
+		component->subComponentA->maxOrbiting = 0;
+		component->subComponentB->maxOrbiting = 0;
+
 		number = starRNG->GenerateByte();
 		starOrbit = exp(0.02*number)*6000; //exp(0.02*255) =~ 164
 
@@ -5058,6 +5228,11 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 
 		starB->SetOrbitalParams(barycenter,star_B_orbit,starOrbitPeriod,starOrbitPhase+TWO_PI*.5);
 
+		//Max orbiting
+		component->maxOrbiting = star_A_orbit+component->subComponentA->maxOrbiting;
+		nextOrbit = star_B_orbit+component->subComponentB->maxOrbiting;
+		if (component->maxOrbiting < nextOrbit) component->maxOrbiting = nextOrbit;
+
 		wprintf(L" } Composite ends  %f \r\n", component->mass);
 		returnObject = barycenter;
 	}
@@ -5072,6 +5247,8 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 			star->SetName(tmp);
 		}
 		componentIndex++;
+
+		component->maxOrbiting = component->radius;
 
 		//wprintf(L" * Single star %f \r\n", component->mass);
 		wprintf(L" * Star %ws %f \r\n", star->GetName().c_str(), component->mass);
@@ -5185,6 +5362,8 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 		planet->SetGravity(true,false);
 		i++;
 
+		component->maxOrbiting = planetOrbit+planetRadius;
+
 		moonOrbitRadius = 5000 + 3*planetRadius;
 
 		for (j=0;;j++)
@@ -5223,12 +5402,13 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 				moon->SetName(tmp);
 			}
 
+			component->maxOrbiting = planetOrbit+moonOrbitRadius+moonRadius;
+
 			number = starRNG->GenerateByte();
 			moonOrbitRadius = moonOrbitRadius + 1000 + number*4;
 			number = starRNG->GenerateByte();
 			moonOrbitRadius = moonOrbitRadius * (1.1+number*0.001);
 
-			
 		}
 
 		//DEBUG INFO
@@ -5243,9 +5423,60 @@ lNextPlanet:
 		planetOrbit = nextOrbit;
 	}
 
+	//TODO: store max orbit somewhere
+
 	return returnObject;
 }
 
+
+void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarComponent* component, Galaxy* galaxy)
+{
+	s32 x,y;
+	f64 wormholeDistance;
+	SpaceObject* wormhole;
+	GalaxyStarSystem* destSystem;
+	vector2d direction;
+
+	wormholeDistance = component->maxOrbiting*1.2;//TODO: add randomize
+
+	if (wormholeDistance<2000000.0) 
+		wormholeDistance = 2000000.0;
+
+	//debug
+	//wormholeDistance = 662251140;
+	for (x=-5;x<=5;x++)
+	for (y=-5;y<=5;y++)
+	if (x!=0 || y!=0)
+	{
+		destSystem = galaxy->GetStarSystem(vector2ds(x+galaxyQuadrant.X,y+galaxyQuadrant.Y));
+		if (destSystem!=0)
+		{
+			direction = destSystem->galaxyCoordinates-galaxyCoordinates;
+			direction.normalize();
+
+			wormhole = resourceManager->MakeWormhole();
+			wormhole->SetMotionType(SpaceObject::MOTION_NONE);
+			wormhole->SetPosition(vector3d(direction.X*wormholeDistance,direction.Y*wormholeDistance,0));
+			wormhole->SetRotation(90+atan2(direction.Y,direction.X)/CoeffDegreesToRadians);
+			/*
+			{
+				wchar_t tmp[255];
+				swprintf(tmp, 255, L"Wormhole to %s",destSystem->name.c_str());
+				wormhole->SetName(tmp);
+			}*/
+			//wormhole->SetName(text_string(L"Unknown wormhole"));
+			wormhole->SetName(text_string(L"Wormhole to ")+destSystem->name);
+
+			wormhole->SetMass(0);
+			wormhole->SetGravity(false,false);
+		}
+	}
+
+
+
+
+	
+}
 
 //#########################################################################
 //SHA-1 - SHA-1 crypto hash
@@ -5601,6 +5832,7 @@ void UndeterminedRandomGenerator::RehashBlock()
 
 int main(int ArgumentCount, char **Arguments) {
 
+	printf("DangerGalaxy demo1 started\r\n");
 	for (;;)
 	{
 		DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();
