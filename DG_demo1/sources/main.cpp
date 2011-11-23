@@ -176,7 +176,7 @@ coding demo1:
 111120: ADD: saving and loading (time and ship position only)
 111120: ADD: checking for wormholes to be too close
 111120: ADD: handling of one-way wormholes
-111120: FIXing: memory leaks by new()
+111123: FIX: removed memory leaks "new() and not delete" (+ one from Irrlicht, but by workaround)
 
 
 
@@ -420,6 +420,7 @@ text_string print_f64(f64 value, const wchar_t* format)
 //classes
 
 class MyEventReceiver;
+class ReferenceCounted;
 class GravityInfo;
 class SpaceObject;
 class GamePhysics;
@@ -492,6 +493,20 @@ private:
 	bool KeyIsDown[KEY_KEY_CODES_COUNT];
 };
 
+//Interface for objects, which need to handled with complex memory management
+//Keep counter of locks (references), which is base for (self)-destruction of object
+class LockCounted {
+	public:
+		LockCounted() {lockCount = 0;}
+		virtual ~LockCounted() {}
+		void lock(s32 locking);
+		bool unlock(s32 unlocking);
+	private:
+		s32 lockCount;
+};
+
+
+//Hold info about gravity in certain point
 class GravityInfo {
 	public:
 		text_string print();
@@ -706,7 +721,6 @@ class GamePhysics {
 		core::array<SpaceObject*> listObjects;
 		vector2d galaxyCoordinatesOfCenter;
 		vector2ds galaxyQuadrant;//valid only if isInterstellar 
-		GravityInfo* gravInfo;
 
 		void ClearObjects();//all but player
 
@@ -1051,11 +1065,13 @@ private:
 };
 
 //Information about 1 star system in the galaxy
-class GalaxyStarSystem
+//Object reference should be stored with lock-unlock mechanism
+class GalaxyStarSystem : public LockCounted
 {
 public:
 
 	GalaxyStarSystem(vector2ds quadrantCoordinates);
+	~GalaxyStarSystem();
 
 	vector2d GetGalaxyCoordinates() {return galaxyCoordinates;}
 	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
@@ -1127,6 +1143,7 @@ class DeterminedRandomGenerator
 public:
 	static const u32 seedLength = 32;
 	DeterminedRandomGenerator();
+	~DeterminedRandomGenerator();
 
 	void SetSeed(u8* newSeed, u32 seedLen);//up to 32 bytes, zero-padded at the end
 	void SetSeedWithCoordinates(u8* newSeed, u32 seedLen, u32 x, u32 y);//up to 24 bytes, zero-padded at the end
@@ -1159,6 +1176,7 @@ class UndeterminedRandomGenerator
 
 public:
 	UndeterminedRandomGenerator();
+	~UndeterminedRandomGenerator();
 
 	void AddSeed(u8* newSeed, u32 seedLen);
 
@@ -1194,6 +1212,9 @@ public:
 class StarComponent
 {
 public:
+	StarComponent();
+	~StarComponent();
+
 	u32 type;//0 - composite, 1 - main-sequence star, 2 - ...
 	f64 mass;//mass, in units
 	f64 radius;//physical radius of object, in units,  for composite its radius of components + mutual distance
@@ -1225,6 +1246,27 @@ private:
 
 //#########################################################################
 //Class methods
+
+//#########################################################################
+//LockCounted
+
+//Lock object
+void LockCounted::lock(s32 locking)
+{
+	lockCount+=locking;
+}
+
+//Unlock object, delete it if lock counter become zero
+bool LockCounted::unlock(s32 unlocking)
+{
+	lockCount-=unlocking;
+	if (lockCount<=0)
+	{
+		delete this;
+		return true;
+	}
+	return false;
+}
 
 //#########################################################################
 //GravityInfo
@@ -1644,7 +1686,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 			{
 				position = position2;
 			}
-			delete checkFTL;// new in CheckFTLBreak()
+			delete checkFTL; //new in CheckFTLBreak()
 
 			//if (!(physics->IsFTLPossible(position)))
 			//	motionType = MOTION_NAVIGATION;
@@ -1734,37 +1776,39 @@ void SpaceObject::AutopilotOrbiting()
 
 	//Get gravity info from game physics
 	GravityInfo* gravInfo = physics->GetGravityInfo(position);
-	if (!gravInfo->maxGravityObject) //no dominant object - no orbiting
-		return;
-	
-	relativePosition = position - gravInfo->maxGravityObject->GetPosition();
-	relativeSpeed = speed - gravInfo->maxGravityObject->GetSpeed();
+	if (gravInfo->maxGravityObject)
+	{//only if there is dominant object
+		
+		relativePosition = position - gravInfo->maxGravityObject->GetPosition();
+		relativeSpeed = speed - gravInfo->maxGravityObject->GetSpeed();
 
-	//get gravity acceleration from dominant gravity object
-	maxGravityAcceleration = gravInfo->maxGravityObject->GetGravityAcceleration(position);
+		//get gravity acceleration from dominant gravity object
+		maxGravityAcceleration = gravInfo->maxGravityObject->GetGravityAcceleration(position);
 
-	//required speed value - via centro-escape acceleration
-	requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); 
+		//required speed value - via centro-escape acceleration
+		requiredRelativeSpeed = sqrt((maxGravityAcceleration.getLength())*(relativePosition.getLength())); 
 
-	//required speed - perpendicular to relative position
-	requiredSpeed.X = relativePosition.Y;
-	requiredSpeed.Y = -relativePosition.X;
-	requiredSpeed.Z = 0;
+		//required speed - perpendicular to relative position
+		requiredSpeed.X = relativePosition.Y;
+		requiredSpeed.Y = -relativePosition.X;
+		requiredSpeed.Z = 0;
 
-	//check opposite direction, it could be closer to current speed
-	if (relativeSpeed.dotProduct(requiredSpeed)<0)
-	{//yes, this direction is opposite to current speed vector
-		requiredSpeed.X=-requiredSpeed.X;//reverse required speed
-		requiredSpeed.Y=-requiredSpeed.Y;
+		//check opposite direction, it could be closer to current speed
+		if (relativeSpeed.dotProduct(requiredSpeed)<0)
+		{//yes, this direction is opposite to current speed vector
+			requiredSpeed.X=-requiredSpeed.X;//reverse required speed
+			requiredSpeed.Y=-requiredSpeed.Y;
+		}
+
+		requiredSpeed.normalize();//normalize - to get vector of 1 unit length
+		requiredSpeed*=requiredRelativeSpeed;//use required speed value
+		requiredSpeed+=gravInfo->maxGravityObject->GetSpeed();//absolute value
+
+		//debug: simple set speed to required value
+		//speed = requiredSpeed;
+		AutopilotSetSpeed(requiredSpeed);
 	}
-
-	requiredSpeed.normalize();//normalize - to get vector of 1 unit length
-	requiredSpeed*=requiredRelativeSpeed;//use required speed value
-	requiredSpeed+=gravInfo->maxGravityObject->GetSpeed();//absolute value
-
-	//debug: simple set speed to required value
-	//speed = requiredSpeed;
-	AutopilotSetSpeed(requiredSpeed);
+	delete gravInfo;//new in GamePhysics::GetGravityInfo
 }
 
 void SpaceObject::JumpToFTL(f64 ftlSpeed)
@@ -1797,7 +1841,6 @@ void SpaceObject::FallIntoWormhole(SpaceObject* wormhole)
 
 GamePhysics::GamePhysics()
 {
-	gravInfo = new GravityInfo();//TODO: no delete
 	calcCollisions = false;
 }
 
@@ -2013,6 +2056,8 @@ GravityInfo* GamePhysics::GetGravityInfo(vector3d location)
 	u32 i;
 	//text_string gravityInfo(L"");
 	f64 gravity;
+
+	GravityInfo* gravInfo = new GravityInfo();//delete must be in called
 	
 	f64 maxGravity=-1;
 	SpaceObject* maxGravityObject =0;
@@ -2096,7 +2141,7 @@ bool GamePhysics::IsPlusMinusPossible(vector3d location)
 
 InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end, f64 gravityLimit)
 {
-	InfoFTL* info = new InfoFTL();//delete is in caller scope
+	InfoFTL* info = new InfoFTL();//delete must be in caller scope
 	info->breaked = false;
 
 	do
@@ -2971,7 +3016,9 @@ JumpToQuasi:
 			
 			playerShip->UpdateGalaxyCoordinates();
 			gameRoot->GetGalaxy()->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
+			jumpTo->unlock(0);//free if not stored somewhere else
 		}
+
 	}
 
 	/*
@@ -3049,6 +3096,8 @@ JumpToQuasi:
 
 	gamePhysics->Update(frameDeltaTime);
 	gamePhysics->UpdateNodes(playerShip);
+
+	delete gravInfo;//new in GamePhysics::GetGravityInfo
 
 	//TODO: use resourceManager to render?
 	videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
@@ -3255,6 +3304,7 @@ void MapSpaceView::AddGalaxy(vector2d galaxyPosition)
 
 void MapSpaceView::Init()
 {
+	//sceneManager->clear();
 	resourceManager = gameRoot->GetResourceManager();
 	videoDriver = resourceManager->GetVideoDriver();
 	device = resourceManager->GetDevice();
@@ -3264,10 +3314,10 @@ void MapSpaceView::Init()
 
 void MapSpaceView::Activate()
 {
-	ClearObjects();
 
 	//gamePhysics->MakeMap(sceneManager,videoDriver,this);
 	sceneManager->clear();
+	ClearObjects();
 
 	gamePhysics->MakeMap(this);
 
@@ -3576,6 +3626,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	if (currentStarSystem)
 	{
 		startGalaxyCoord = currentStarSystem->GetGalaxyCoordinates();
+		currentStarSystem->lock(1);//lock as it is stored
 	}
 	
 	gamePhysics = new GamePhysics();//delete in DG_Game::Close
@@ -3830,9 +3881,10 @@ void DG_Game::Close() {
 	delete gamePhysics;//new in DG_Game::Init
 	delete receiver;//new in DG_Game::Init
 
+	QuasiSpace->Close();
+	FTLSpace->Close();
 	RealSpace->Close();
 	SectorMap->Close();
-	FTLSpace->Close();
 
 	delete RealSpace;//new in DG_Game::Init
 	delete SectorMap;//new in DG_Game::Init
@@ -3884,7 +3936,11 @@ void DG_Game::GoInterstellar()
 	vector3d playerLocalPosition;
 	f64 cameraDistance = RealSpace->cameraDistanceDegree;
 
-	currentStarSystem = 0;
+	if (currentStarSystem)
+	{
+		currentStarSystem->unlock(1);//free
+		currentStarSystem = 0;
+	}
 
 	RealSpace->Clean();
 	RealSpace->Init();
@@ -3942,7 +3998,14 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	//resourceManager->MakeSimpleSystem();
 	toStarSystem->GenerateStarSystem(resourceManager, wholeGalaxy);
 
+	if (currentStarSystem)
+	{
+		currentStarSystem->unlock(1);//free
+		currentStarSystem = 0;
+	}
+
 	currentStarSystem = toStarSystem;
+	currentStarSystem->lock(1);//lock as it is stored
 
 	RealSpace->cameraDistanceDegree = cameraDistance;
 	RealSpace->UpdateCameraDistance();
@@ -3961,6 +4024,10 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 
 void DG_Game::InternalAcviateView(ViewType newView)
 {
+	//Workaround for memory leak somewhere inside Irrlicht
+	//I don't know how to do it better
+	smgr->createNewSceneManager()->drop();
+
 	switch(newView)
 	{
 	case VIEW_NONE:
@@ -4022,7 +4089,8 @@ s32 DG_Game::SwitchView(ViewType newView)
 	if (newView==currentView)
 		return 0;//aready activated
 
-	viewStack[viewStack.size()-1] = new ViewType(newView);//delete in DG_Game::Close
+	delete viewStack[viewStack.size()-1];
+	viewStack[viewStack.size()-1] = new ViewType(newView);//delete in DG_Game::Close and above
 	InternalAcviateView(newView);
 
 	return 0;
@@ -4245,6 +4313,7 @@ void PlayerShip::UpdateQuasiSpace(f64 time, Galaxy* galaxy)
 				//motionType = MOTION_NAVIGATION;
 				SetIntProperty(MOTION_TYPE, MOTION_NAVIGATION);
 				speed=vector3d(0);
+				exitTo->unlock(0);//free if not stored somewhere else
 				return;
 			}
 		}
@@ -4336,6 +4405,8 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	speed = newSpeed;*/
 
 	physics->Activate();
+
+	exitTo->unlock(0);//free if not stored somewhere else
 
 	return;
 }
@@ -4615,6 +4686,7 @@ Galaxy::~Galaxy()
 	galaxyRNG =0;
 }
 
+//Object should be unlock()-ed to 0 outside
 GalaxyStarSystem* Galaxy::GetStarSystem(vector2ds coordinates)
 {
 	//u32 i;
@@ -4865,7 +4937,7 @@ void Galaxy::SaveMapTexture()
 	fclose(f1);
 }
 
-
+//Object should be unlock()-ed to 0 outside
 GalaxyStarSystem* Galaxy::DebugJump()
 {
 	/*
@@ -4911,6 +4983,7 @@ GalaxyStarSystem* Galaxy::DebugJump()
 
 }
 
+//Object should be unlock()-ed to 0 outside
 GalaxyStarSystem* Galaxy::SeedStar(vector2ds coordinates)
 {
 	u8 starSeed[16];
@@ -4922,7 +4995,7 @@ GalaxyStarSystem* Galaxy::SeedStar(vector2ds coordinates)
 	//starName = L"Star ";
 	//starName +=n;
 	//GalaxyStarSystem* newSystem = GalaxyStarSystem::RandomStar(coordinates);
-	GalaxyStarSystem* newSystem = new GalaxyStarSystem(coordinates);
+	GalaxyStarSystem* newSystem = new GalaxyStarSystem(coordinates);//delete - by unlock()
 	newSystem->SetSeed(starSeed,16);
 	newSystem->GenerateStar();
 	//newSystem->SetName(text_string(tmp));
@@ -4938,6 +5011,8 @@ void Galaxy::UpdateKnownStars()
 	text_string starName;
 	vector2ds coordinates;
 
+	for (u32 i=0;i<knownStars.size();i++)
+		knownStars[i]->unlock(1);//free
 	knownStars.clear();
 
 	for (y=-10;y<10;y++)
@@ -4948,7 +5023,10 @@ void Galaxy::UpdateKnownStars()
 			coordinates.X = knownStarsCenter.X+x;
 			if (CheckStarPresence(coordinates)==1)
 			{
-				knownStars.push_back(SeedStar(coordinates));
+				GalaxyStarSystem* knownSystem;
+				knownSystem = SeedStar(coordinates);
+				knownSystem->lock(1);//lock as it is stored
+				knownStars.push_back(knownSystem);
 			}
 		}
 	}
@@ -5101,8 +5179,15 @@ s32 Galaxy::HilbertCurveDirection(s32 x, s32 y, s32 direction)
 GalaxyStarSystem::GalaxyStarSystem(vector2ds quadrantCoordinates)
 {
 	galaxyQuadrant = quadrantCoordinates;
-	starRNG = new DeterminedRandomGenerator();
+	starRNG = new DeterminedRandomGenerator();//delete in ~GalaxyStarSystem
 }
+
+GalaxyStarSystem::~GalaxyStarSystem()
+{
+	delete starRNG;//new in GalaxyStarSystem::GalaxyStarSystem
+	starRNG = 0;
+}
+
 
 void GalaxyStarSystem::GenerateStar()
 {
@@ -5183,7 +5268,7 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager, Gala
 	//root->SetMotionType(SpaceObject::MOTION_NONE);
 
 
-	rootComponent = new StarComponent();
+	rootComponent = new StarComponent();//delete below
 
 	rootComponent->type = 0;//yet is composite
 	rootComponent->mass = starMass;
@@ -5206,6 +5291,9 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager, Gala
 	root->SetPosition(vector3d(0));
 
 	GenerateWormholes(resourceManager,rootComponent,galaxy);
+
+	delete rootComponent;//new here in scope
+	rootComponent = 0;
 
 
 
@@ -5524,17 +5612,12 @@ void GalaxyStarSystem::GenerateComponent2(StarComponent *component)
 		number = starRNG->GenerateByte();
 		fraction = (0.02 + number * 0.00188);//2% - 49.94% for B component
 
-		component->subComponentA = new StarComponent();
-		component->subComponentB = new StarComponent();
+		component->subComponentA = new StarComponent();//delete in ~StarComponent of upper StarComponent
+		component->subComponentB = new StarComponent();//delete in ~StarComponent of upper StarComponent
 
-		component->subComponentA->type = 0;
-		component->subComponentB->type = 0;
 
 		component->subComponentA->mass = component->mass*(1.0-fraction);
 		component->subComponentB->mass = component->mass*fraction;
-
-		component->subComponentA->maxOrbiting = 0;
-		component->subComponentB->maxOrbiting = 0;
 
 		number = starRNG->GenerateByte();
 		starOrbit = exp(0.02*number)*6000; //exp(0.02*255) =~ 164
@@ -5550,22 +5633,6 @@ void GalaxyStarSystem::GenerateComponent2(StarComponent *component)
 		component->subComponentA->outerOrbitLimit = 0.9*distanceA_H;//90% in Roche lobe
 		component->subComponentB->outerOrbitLimit = 0.9*(starOrbit-distanceA_H);//90% in Roche lobe
 		component->subComponentsOrbit = starOrbit;
-
-		component->subComponentA->innerOrbitLimit = 0;
-		component->subComponentB->innerOrbitLimit = 0;
-		component->subComponentA->radius = 0;
-		component->subComponentB->radius = 0;
-
-		component->subComponentA->colorIndexBV = 0;
-		component->subComponentA->luminosity = 1;
-		component->subComponentA->subComponentA = 0;
-		component->subComponentA->subComponentB = 0;
-		component->subComponentA->subComponentsOrbit = 0;
-		component->subComponentB->colorIndexBV = 0;
-		component->subComponentB->luminosity = 1;
-		component->subComponentB->subComponentA = 0;
-		component->subComponentB->subComponentB = 0;
-		component->subComponentB->subComponentsOrbit = 0;
 
 		//wprintf(L" | Composite in\r\n");
 
@@ -5917,6 +5984,7 @@ void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarC
 			listWormholes.push_back(wormhole);
 
 			wormholeCounter++;
+			destSystem->unlock(0);//free if not stored somewhere else
 		}
 	}
 
@@ -6128,13 +6196,20 @@ u32 SHA1::WriteHash(u8* outputData)
 
 DeterminedRandomGenerator::DeterminedRandomGenerator()
 {
-	hasher = new SHA1();
+	hasher = new SHA1();//delete in ~DeterminedRandomGenerator
 	offset = -1;
 	blockOffset = -1;
 	memset(hashBuffer,0,bufferLength);
 	//SetSeed(0,0);
 	SetOffset(0);
 }
+
+DeterminedRandomGenerator::~DeterminedRandomGenerator()
+{
+	delete hasher;//new in DeterminedRandomGenerator::DeterminedRandomGenerator
+	hasher = 0;
+}
+
 
 //up to 32 bytes, zero-padded at the end
 void DeterminedRandomGenerator::SetSeed(u8* newSeed, u32 seedLen)
@@ -6224,11 +6299,18 @@ void DeterminedRandomGenerator::GenerateBlock()
 
 UndeterminedRandomGenerator::UndeterminedRandomGenerator()
 {
-	hasher = new SHA1();
+	hasher = new SHA1();//delete in ~UndeterminedRandomGenerator
 	offset = 0;
 	memset(hashBuffer,0,bufferLength);//clean, as compiler would not like leaving buffer with untouched memory content
 	GenerateBlock();
 }
+
+UndeterminedRandomGenerator::~UndeterminedRandomGenerator()
+{
+	delete hasher;//new in UndeterminedRandomGenerator::UndeterminedRandomGenerator
+	hasher = 0;
+}
+
 
 void UndeterminedRandomGenerator::AddSeed(u8* newSeed, u32 seedLen)
 {
@@ -6305,55 +6387,95 @@ void UndeterminedRandomGenerator::RehashBlock()
 }
 
 //#########################################################################
+//StarComponent - hold info for component of (multiple) star
+
+StarComponent::StarComponent()
+{
+	type = 0;
+	mass = 0;
+	radius = 0;
+	luminosity = 1;
+	innerOrbitLimit = 0;
+	outerOrbitLimit = 0;
+	maxOrbiting = 0;
+	colorIndexBV = 0;
+	subComponentsOrbit = 0;
+
+	subComponentA = 0;
+	subComponentB = 0;
+}
+
+StarComponent::~StarComponent()
+{
+	if (subComponentA)
+	{
+		delete subComponentA;
+		subComponentA = 0;
+	}
+	if (subComponentB)
+	{
+		delete subComponentB;
+		subComponentB = 0;
+	}
+}
+
+
+//#########################################################################
 //main()
 
 int main(int ArgumentCount, char **Arguments) {
 
 	printf("DangerGalaxy demo1 started\r\n");
-	for (;;)
+
 	{
-		DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();
-		//UndeterminedRandomGenerator* pRNG = new UndeterminedRandomGenerator();
-		u8 testSeed[32]={0x69,0x55,0xF1,0x14, 0xED,0xFE,0x58,0x45, 0xA9,0x21,0x30,0x61, 0x95,0x19,0x21,0x32,
-			0x4D,0xD8,0x71,0xB5, 0xB9,0x76,0xEC,0x03, 0x29,0xAD,0xCC,0x3B, 0xC2,0xF1,0xE2,0x07};
-		//u8 testSeed[32];//={0x11,0x12,0x23,0x;
-		u8 testVector1[16]={0xED,0x4B,0x97,0x67,0x02,0xC1,0x47,0x24,0x9E,0x89,0xF3,0xB7,0x1D,0x28,0x21,0xC9};
-		u8 testVector2[16]={0x36,0x45,0xFA,0x99,0x68,0xDC,0xEB,0x49,0x7E,0xC3,0x1E,0xCC,0x0C,0x01,0x68,0x93};
-		u8 testOut1[16],testOut2[16];
+		DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();//delete is below
 
-		//for (u32 i=0;i<32;i++)
-		//	testSeed[i]=11;
-		pRNG->SetSeedWithCoordinates(testSeed,32,1,1);
-		//pRNG->AddSeed(testSeed,32);
-
-		//printf("seed (1,1) from 0 v1:");
-		for (u32 i=0;i<16;i++)
-			//printf("%02X",pRNG->GenerateByte());
-			testOut1[i]=pRNG->GenerateByte();
-		//printf("\r\n");
-
-		if (memcmp(testVector1,testOut1,16)!=0)
+		for (;;)
 		{
-			printf("WARNING! Determined generator failed on 1st test\r\n");
+			//UndeterminedRandomGenerator* pRNG = new UndeterminedRandomGenerator();
+			u8 testSeed[32]={0x69,0x55,0xF1,0x14, 0xED,0xFE,0x58,0x45, 0xA9,0x21,0x30,0x61, 0x95,0x19,0x21,0x32,
+				0x4D,0xD8,0x71,0xB5, 0xB9,0x76,0xEC,0x03, 0x29,0xAD,0xCC,0x3B, 0xC2,0xF1,0xE2,0x07};
+			//u8 testSeed[32];//={0x11,0x12,0x23,0x;
+			u8 testVector1[16]={0xED,0x4B,0x97,0x67,0x02,0xC1,0x47,0x24,0x9E,0x89,0xF3,0xB7,0x1D,0x28,0x21,0xC9};
+			u8 testVector2[16]={0x36,0x45,0xFA,0x99,0x68,0xDC,0xEB,0x49,0x7E,0xC3,0x1E,0xCC,0x0C,0x01,0x68,0x93};
+			u8 testOut1[16],testOut2[16];
+
+			//for (u32 i=0;i<32;i++)
+			//	testSeed[i]=11;
+			pRNG->SetSeedWithCoordinates(testSeed,32,1,1);
+			//pRNG->AddSeed(testSeed,32);
+
+			//printf("seed (1,1) from 0 v1:");
+			for (u32 i=0;i<16;i++)
+				//printf("%02X",pRNG->GenerateByte());
+				testOut1[i]=pRNG->GenerateByte();
+			//printf("\r\n");
+
+			if (memcmp(testVector1,testOut1,16)!=0)
+			{
+				printf("WARNING! Determined generator failed on 1st test\r\n");
+				break;
+			}
+
+			//pRNG->SetOffset(3);
+			pRNG->SetSeedWithCoordinates(testSeed,32,1,2);
+
+			//printf("seed (1,2) from 3 v2:");
+			for (u32 i=0;i<16;i++)
+				//printf("%02X",pRNG->GetByteByOffset(i+1003));
+				testOut2[i]=pRNG->GetByteByOffset(i+1003);
+				//printf("%02X",pRNG->GenerateByte());
+			//printf("\r\n");
+			if (memcmp(testVector2,testOut2,16)!=0)
+			{
+				printf("WARNING! Determined generator failed on 2nd test\r\n");
+				break;
+			}
+			printf("Determined generator works fine\r\n");
 			break;
 		}
-
-		//pRNG->SetOffset(3);
-		pRNG->SetSeedWithCoordinates(testSeed,32,1,2);
-
-		//printf("seed (1,2) from 3 v2:");
-		for (u32 i=0;i<16;i++)
-			//printf("%02X",pRNG->GetByteByOffset(i+1003));
-			testOut2[i]=pRNG->GetByteByOffset(i+1003);
-			//printf("%02X",pRNG->GenerateByte());
-		//printf("\r\n");
-		if (memcmp(testVector2,testOut2,16)!=0)
-		{
-			printf("WARNING! Determined generator failed on 2nd test\r\n");
-			break;
-		}
-		printf("Determined generator works fine\r\n");
-		break;
+		delete pRNG;//new is above
+		pRNG = 0;
 	}
 
 	//Init and semi-test
@@ -6374,6 +6496,9 @@ int main(int ArgumentCount, char **Arguments) {
 
 	// Shut down the system
 	game->Close();
+
+	delete game;
+	game = 0;
 
 	return 0;
 }
