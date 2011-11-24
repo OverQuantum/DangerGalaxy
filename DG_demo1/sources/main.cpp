@@ -177,6 +177,9 @@ coding demo1:
 111120: ADD: checking for wormholes to be too close
 111120: ADD: handling of one-way wormholes
 111123: FIX: removed memory leaks "new() and not delete" (+ one from Irrlicht, but by workaround)
+111124: FIX: unlock before lock for needed system
+111124: CHG: wormholes generation moved to galaxy's method (still very easy)
+111124: ADD: show wormhole links (currently shifted from stars)
 
 
 
@@ -212,16 +215,17 @@ DONE:
 + advanced mesh - visible from a far (wormhole)
 + too close wormholes - shift to diff locations
 + no wormhole at destination
++ FIX BUG: memory leak somewhere on star system generation or exiting/entering
 
 
 TODO:
 
 * MAIN PLAN
 - BUG: .normalize() on Linux (??)
-- BUG: memory leak somewhere on star system generation or exiting/entering
-- save & load
+. save & load
   + global position and speed
 - wormhole network
+  . visualization of wormhole links
   - some good triangulation for building wormhole net
   - animation: opening on approaching mass and closing 
   - "killing" non-player objects
@@ -422,6 +426,7 @@ text_string print_f64(f64 value, const wchar_t* format)
 class MyEventReceiver;
 class ReferenceCounted;
 class GravityInfo;
+class WormholeInfo;
 class SpaceObject;
 class GamePhysics;
 //class StarSystemConstructor;
@@ -524,6 +529,13 @@ class GravityInfo {
 		f64 orbitEccentricity;//Eccentricity
 		f64 orbitArgumentPeriapsis;//Argument of periapsis
 };
+
+class WormholeInfo {
+	public:
+		vector2ds Star1;
+		vector2ds Star2;
+};
+
 
 //SpaceObject - is any object in current visible space
 class SpaceObject {
@@ -916,6 +928,7 @@ public:
 	void SetNode(SceneNode * node) {sceneNode = node;}
 	void SetOriginal(SpaceObject* object) {originalObject = object;}
 	void SetSizes(f64 newSizeReal, f64 newSizeMinimal) {sizeReal = newSizeReal; sizeMinimal = newSizeMinimal;}
+	void SetYScale(f64 newYScale) {yScale = newYScale;}
 	void SetScaleLimits(f64 newLowLimit) {lowScaleLimit = newLowLimit;}
 
 private:
@@ -923,7 +936,8 @@ private:
 	vector2d nonObjectPosition; //in case of originalObject=0
 	f64 sizeReal;//physical size of object, for detailed zooms
 	f64 sizeMinimal;//in case of very far distance
-	f64 lowScaleLimit;//fabe objects if it too big
+	f64 lowScaleLimit;//fade objects if it too big
+	f64 yScale;//scale koeff for Y-size
 	SceneNode* sceneNode; //Irrlich renderable object
 };
 
@@ -937,6 +951,7 @@ public:
 	void Close();
 	void AddObject(SpaceObject* spaceObject);
 	void AddStarMarker(GalaxyStarSystem* starSystem);
+	void AddWormholeLink(WormholeInfo* link);
 
 	void AddGalaxy(vector2d galaxyPosition);
 
@@ -1032,6 +1047,8 @@ public:
 	u32 IsInGrid(vector2ds coordinates);//Check coordinates for being inside 131072x131072 grid
 	GalaxyStarSystem* GetStartStarSystem(); //Get star system of player start
 	void UpdatePlayerLocation(vector2d coordinates);//For updating cache of stars
+	void GenerateWormholes();
+	void GetWormholesFrom(vector2ds quadrant, core::array<WormholeInfo*>* list);
 
 	//void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
 	void SaveMapTexture();
@@ -1042,6 +1059,7 @@ public:
 	GalaxyStarSystem* DebugJump();
 
 private:
+	bool wormholesGenerated;
 	u32 debugStarCounter;
 	u32 galaxyType;//0 - E0, 1 - E1-E7, 2 - S*, 3 - Irr random, 4 - E* two cores
 
@@ -1058,10 +1076,13 @@ private:
 	f32 stellarDensity[2048][2048];//stellar density field
 	
 	core::array<GalaxyStarSystem*> knownStars;//cache for near stars
-	vector2ds knownStarsCenter;//center of cache
+	core::array<WormholeInfo*> knownWormholes;//cache for wormholes
+	vector2ds knownStarsAnchor;//"center" of cache
 
 	GalaxyStarSystem* SeedStar(vector2ds coordinates);//seed star system from galaxy seed. Prereq: galaxyRNG must be seeded with coordinates in CheckStarPresence() or so
 	void UpdateKnownStars();//Updates caches (ex. in case of player moves to quadrant other than center of cache)
+	void ClearWormholes();
+	void ClearKnownStars();
 };
 
 //Information about 1 star system in the galaxy
@@ -3146,6 +3167,7 @@ MapObject::MapObject()
 	originalObject = 0;
 	sizeMinimal = 0;
 	sizeReal = 1.0;
+	yScale = 1.0;
 }
 
 void MapObject::UpdatePosition(f64 mapScale, vector2d centerOfMap)
@@ -3170,7 +3192,8 @@ void MapObject::UpdatePosition(f64 mapScale, vector2d centerOfMap)
 		if (size<sizeMinimal) size = sizeMinimal;
 
 		sceneNode->setPosition(vector3df((f32)(position.X),(f32)(position.Y),0));
-		sceneNode->setScale(vector3df((f32)(size)));
+		//sceneNode->setScale(vector3df((f32)(size)));
+		sceneNode->setScale(vector3df((f32)(size),(f32)(size*yScale),(f32)(size)));
 
 		if (lowScaleLimit!=0)
 		{
@@ -3223,7 +3246,6 @@ void MapSpaceView::AddStarMarker(GalaxyStarSystem* starSystem)
 	if (position.getLengthSQ()<0.01)
 		return;//skip same star
 
-	//TODO: add non-object marker
 	SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
 	if (sceneNode2)
 	{
@@ -3248,6 +3270,31 @@ void MapSpaceView::AddStarMarker(GalaxyStarSystem* starSystem)
 	newMapObject->SetNode(sceneNode2);
 	newMapObject->SetNonObjectPosition(position);
 	newMapObject->SetSizes(1e6,1.0);//~1 lighthour, ~6.6 AU, ~720 solar raduises
+	MapObjectList.push_back(newMapObject);
+}
+
+void MapSpaceView::AddWormholeLink(WormholeInfo* link)
+{
+	f64 rotation;
+	f64 distance;
+	vector2d linkVector;
+	linkVector.X = link->Star2.X-link->Star1.X;
+	linkVector.Y = link->Star2.Y-link->Star1.Y;
+
+	vector2d position = (vector2d(link->Star1.X,link->Star1.Y) - gamePhysics->GetGalaxyCoordinatesOfCenter())*LIGHTYEAR;
+	rotation = atan2(linkVector.Y,linkVector.X)*RADTODEG64;
+	//rotation = linkVector.getAngle();
+	distance = linkVector.getLength();
+
+	SceneNode* sceneNode2 = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/wormholelink.irrmesh"));
+	sceneNode2->setRotation(vector3df(0,0,(f32)rotation));
+
+	MapObject* newMapObject = new MapObject();//delete in MapSpaveView::ClearObjects
+	newMapObject->SetNode(sceneNode2);
+	newMapObject->SetNonObjectPosition(position);
+	newMapObject->SetSizes(LIGHTYEAR*distance,0.0);
+	newMapObject->SetYScale(0.2/distance);//width should be contant (0.2 l.y), so Y-scale is revert to distance
+	newMapObject->SetScaleLimits(1000);//disappear for system-wide scale
 	MapObjectList.push_back(newMapObject);
 }
 
@@ -3297,7 +3344,7 @@ void MapSpaceView::AddGalaxy(vector2d galaxyPosition)
 	newMapObject->SetNode(sceneNode2);
 	newMapObject->SetNonObjectPosition(-galaxyPosition*LIGHTYEAR);
 	newMapObject->SetSizes(LIGHTYEAR*131072,1.0);//
-	newMapObject->SetScaleLimits(200000);
+	newMapObject->SetScaleLimits(200000);//disappear for cluster-wide scale
 	MapObjectList.push_back(newMapObject);
 }
 
@@ -3628,6 +3675,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 		startGalaxyCoord = currentStarSystem->GetGalaxyCoordinates();
 		currentStarSystem->lock(1);//lock as it is stored
 	}
+
 	
 	gamePhysics = new GamePhysics();//delete in DG_Game::Close
 	gamePhysics->globalTime = 0;
@@ -3636,6 +3684,8 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	gamePhysics->SetGravityCheckRadiusSQ(STAR_SYSTEM_RADIUS_LEAVE*STAR_SYSTEM_RADIUS_LEAVE*LIGHTYEAR*LIGHTYEAR);
 	gamePhysics->SetTimeSpeed(1.0);
 	gamePhysics->SetRoot(this);
+
+	wholeGalaxy->UpdatePlayerLocation(startGalaxyCoord);
 
 	viewStack.clear();
 
@@ -3702,6 +3752,8 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	GoStarSystem(currentStarSystem);
 
 	playerShip->SetPosition(vector3d(LIGHTYEAR*0.07,0,0));
+	playerShip->UpdateGalaxyCoordinates();
+
 
 	gamePhysics->Activate();
 
@@ -3998,14 +4050,15 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	//resourceManager->MakeSimpleSystem();
 	toStarSystem->GenerateStarSystem(resourceManager, wholeGalaxy);
 
+
+	toStarSystem->lock(1);//lock as it is stored, lock 1st as toStarSystem could be = to currentStarSystem
+
 	if (currentStarSystem)
 	{
 		currentStarSystem->unlock(1);//free
 		currentStarSystem = 0;
 	}
-
 	currentStarSystem = toStarSystem;
-	currentStarSystem->lock(1);//lock as it is stored
 
 	RealSpace->cameraDistanceDegree = cameraDistance;
 	RealSpace->UpdateCameraDistance();
@@ -4444,8 +4497,8 @@ void Galaxy::Init()
 
 	galaxyRNG->SetSeed(galaxySeed,16);
 
-	knownStarsCenter.X = 0;
-	knownStarsCenter.Y = 0;
+	knownStarsAnchor.X = 0;
+	knownStarsAnchor.Y = 0;
 
 	s32 x,y;
 	s32 number;
@@ -4682,6 +4735,8 @@ void Galaxy::Init()
 
 Galaxy::~Galaxy()
 {
+	ClearKnownStars();
+	ClearWormholes();
 	delete galaxyRNG;//new in Galaxy::Init
 	galaxyRNG =0;
 }
@@ -4710,11 +4765,11 @@ GalaxyStarSystem* Galaxy::GetStarSystem(vector2ds coordinates)
 void Galaxy::UpdatePlayerLocation(vector2d coordinates)
 {
 	vector2ds quadrant;
-	quadrant.X = (s32)floor(coordinates.X);
-	quadrant.Y = (s32)floor(coordinates.Y);
-	if (quadrant!=knownStarsCenter)
+	quadrant.X = ((s32)floor(coordinates.X*0.1))*10;//round to 10th
+	quadrant.Y = ((s32)floor(coordinates.Y*0.1))*10;//round to 10th
+	if (quadrant!=knownStarsAnchor)
 	{
-		knownStarsCenter = quadrant;
+		knownStarsAnchor = quadrant;
 		UpdateKnownStars();
 	}
 }
@@ -4761,6 +4816,12 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 		//if (coordinates==knownStars[i]->GetGalaxyQuadrant())
 			//return knownStars[i];*/
 	}
+
+	for (i=0;i<knownWormholes.size();i++)
+	{
+		mapView->AddWormholeLink(knownWormholes[i]);
+	}
+
 	return;
 
 }
@@ -4856,23 +4917,29 @@ GalaxyStarSystem* Galaxy::GetStartStarSystem()
 
 	y = 1024;//0 by galaxy coordinates
 
+	//start from left most stars
+	//find galaxy cell with non minimal density
 	for (x=2047;x>=1026;x--)
 		if (stellarDensity[x][y]>0.02)
 			break;
 
-	knownStarsCenter.X = x*64-65504;
-	knownStarsCenter.Y = 0;
+	knownStarsAnchor.X = x*64-65504;
+	knownStarsAnchor.Y = 0;
 
+	//find quad with non zero stars
 	for (;;)
 	{
-		UpdateKnownStars();//update cache of stars around (0,0)
+		UpdateKnownStars();//update cache of stars around found location
 
 		if (knownStars.size()>0)
 			break;
 
-		knownStarsCenter.X -= 10;
+		knownStarsAnchor.X -= 20;
+		//TODO: exit condition, in case of very bad luck
 	}
 
+
+	//find star, closest to X=0 axis ( min(abs(Y)) )
 	for (i=0;i<knownStars.size();i++)
 	{
 		//distanceSQ = (knownStars[i]->GetGalaxyCoordinates()).getLengthSQ();//distance from (0,0)
@@ -4959,7 +5026,7 @@ GalaxyStarSystem* Galaxy::DebugJump()
 	return knownStars[numnber%knownStars.size()];*/
 
 	vector2ds randomLocation;
-	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,knownStarsCenter.X,knownStarsCenter.Y);
+	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,knownStarsAnchor.X,knownStarsAnchor.Y);
 	galaxyRNG->SetOffset(777+debugStarCounter);
 
 	for (u32 i=0;i<1000;i++)
@@ -5007,20 +5074,25 @@ GalaxyStarSystem* Galaxy::SeedStar(vector2ds coordinates)
 void Galaxy::UpdateKnownStars()
 {
 	s32 x,y;
+	s32 x0,y0,x1,y1;
 	//s32 n = 0;
 	text_string starName;
 	vector2ds coordinates;
 
-	for (u32 i=0;i<knownStars.size();i++)
-		knownStars[i]->unlock(1);//free
-	knownStars.clear();
+	ClearKnownStars();
+	ClearWormholes();
 
-	for (y=-10;y<10;y++)
+	x0 = knownStarsAnchor.X-25;
+	y0 = knownStarsAnchor.Y-25;
+	x1 = x0+50;
+	y1 = y0+50;
+
+	for (y=y0;y<y1;y++)
 	{
-		coordinates.Y = knownStarsCenter.Y+y;
-		for (x=-10;x<10;x++)
+		coordinates.Y = y;
+		for (x=x0;x<x1;x++)
 		{
-			coordinates.X = knownStarsCenter.X+x;
+			coordinates.X = x;
 			if (CheckStarPresence(coordinates)==1)
 			{
 				GalaxyStarSystem* knownSystem;
@@ -5031,7 +5103,7 @@ void Galaxy::UpdateKnownStars()
 		}
 	}
 
-	wprintf(L"DG: quadrant (%i,%i) stars around: %i\r\n",knownStarsCenter.X,knownStarsCenter.Y,knownStars.size());
+	wprintf(L"DG: quadrant (%i,%i) stars around: %i\r\n",knownStarsAnchor.X,knownStarsAnchor.Y,knownStars.size());
 	
 	//knownStars.
 }
@@ -5171,6 +5243,66 @@ s32 Galaxy::HilbertCurveDirection(s32 x, s32 y, s32 direction)
 		}
 	}
 
+}
+
+void Galaxy::GenerateWormholes()
+{
+	u32 i,j;
+	f64 distSQ;
+	WormholeInfo* newWormhole;
+	//knownWormholes.push_back();
+
+	if (wormholesGenerated)
+		return;//do nothing
+
+	ClearWormholes();
+
+	//Very basic list of wormholes - all with dist<=10 l.y.
+	for (j=1;j<knownStars.size();j++)
+		for (i=0;i<j;i++)
+		{
+			distSQ = (knownStars[i]->GetGalaxyCoordinates() - knownStars[j]->GetGalaxyCoordinates()).getLengthSQ();
+			if (distSQ < 100.0)
+			{
+				newWormhole = new WormholeInfo();//delete in Galaxy::ClearWormholes
+				newWormhole->Star1 = knownStars[i]->GetGalaxyQuadrant();
+				newWormhole->Star2 = knownStars[j]->GetGalaxyQuadrant();
+				knownWormholes.push_back(newWormhole);
+			}
+		}
+	wormholesGenerated = true;
+	wprintf(L" * GenWorm: %i wormholes generated\r\n",knownWormholes.size());
+}
+
+void Galaxy::GetWormholesFrom(vector2ds quadrant, core::array<WormholeInfo*>* list)
+{
+	list->clear();
+	for (u32 i=0;i<knownWormholes.size();i++)
+	{
+		if (knownWormholes[i]->Star1 == quadrant || 
+			knownWormholes[i]->Star2 == quadrant)
+		{
+			list->push_back(knownWormholes[i]);
+		}
+	}
+}
+
+void Galaxy::ClearWormholes()
+{
+	wormholesGenerated = false;
+	for (u32 i=0;i<knownWormholes.size();i++)
+	{
+		delete knownWormholes[i];
+		knownWormholes[i] = 0;
+	}
+	knownWormholes.clear();
+}
+
+void Galaxy::ClearKnownStars()
+{
+	for (u32 i=0;i<knownStars.size();i++)
+		knownStars[i]->unlock(1);//free
+	knownStars.clear();
 }
 
 //#########################################################################
@@ -5924,14 +6056,16 @@ lNextPlanet:
 
 void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarComponent* component, Galaxy* galaxy)
 {
-	s32 x,y;
+	//s32 x,y;
 	SpaceObject* wormhole;
 	GalaxyStarSystem* destSystem;
 	vector2d direction;
+	vector2ds destination;
 	f64 thisDistance;
 	s32 wormholeCounter=0;
 	s32 number;
 	u32 i,j;
+	core::array<WormholeInfo*> listWormholeLinks;
 	core::array<SpaceObject*> listWormholes;
 	bool flagDistanceCheck;
 
@@ -5944,11 +6078,25 @@ void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarC
 	
 	//wormholeDistance = 662251140; //DEBUG
 
+	galaxy->GenerateWormholes();
+	galaxy->GetWormholesFrom(galaxyQuadrant,&listWormholeLinks);
+
+	for (i=0;i<listWormholeLinks.size();i++)
+	{
+		destination = listWormholeLinks[i]->Star2;
+		if (destination == galaxyQuadrant)
+			destination = listWormholeLinks[i]->Star1;
+		
+		destSystem = galaxy->GetStarSystem(destination);
+
+	
+/*
+	//Very-very dumb - all wormholes to stars in +-5 l.y. quad
 	for (x=-5;x<=5;x++)
 	for (y=-5;y<=5;y++)
 	if (x!=0 || y!=0)
 	{
-		destSystem = galaxy->GetStarSystem(vector2ds(x+galaxyQuadrant.X,y+galaxyQuadrant.Y));
+		destSystem = galaxy->GetStarSystem(vector2ds(x+galaxyQuadrant.X,y+galaxyQuadrant.Y));*/
 		if (destSystem!=0)
 		{
 			direction = destSystem->galaxyCoordinates-galaxyCoordinates;
@@ -5978,8 +6126,10 @@ void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarC
 			//wormhole->SetName(text_string(L"Unknown wormhole"));
 			wormhole->SetName(text_string(L"Wormhole to ")+destSystem->name);
 
-			wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_X,x+galaxyQuadrant.X);
-			wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_Y,y+galaxyQuadrant.Y);
+			//wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_X,x+galaxyQuadrant.X);
+			//wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_Y,y+galaxyQuadrant.Y);
+			wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_X,destination.X);
+			wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_Y,destination.Y);
 
 			listWormholes.push_back(wormhole);
 
