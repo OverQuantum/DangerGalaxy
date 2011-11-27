@@ -2,8 +2,8 @@
 <mesh xmlns="http://irrlicht.sourceforge.net/IRRMESH_09_2007" version="1.0">
 <!-- Created 22:27 24.06.2011 manually -->
    <buffer>
-      <material bmat="uvmat:plane0.jpg:00100">
-         <enum name="Type" value="solid"/>
+      <material>
+         <enum name="Type" value="trans_add"/>
          <color name="Ambient" value="ffffff00"/>
          <color name="Diffuse" value="ffffff00"/>
          <color name="Emissive" value="ff000000"/>
@@ -13,8 +13,8 @@
          <float name="Param2" value="0.000000"/>
          <bool name="Wireframe" value="false"/>
          <bool name="GouraudShading" value="true"/>
-         <bool name="Lighting" value="true"/>
-         <bool name="ZWriteEnable" value="true"/>
+         <bool name="Lighting" value="false"/>
+         <bool name="ZWriteEnable" value="false"/>
          <int name="ZBuffer" value="1"/>
          <bool name="BackfaceCulling" value="true"/>
          <bool name="FrontfaceCulling" value="false"/>
@@ -22,7 +22,7 @@
          <bool name="NormalizeNormals" value="true"/>
          <int name="AntiAliasing" value="5"/>
          <int name="ColorMask" value="15"/>
-         <texture name="Texture1" value=""/>
+         <texture name="Texture1" value="media/fire1.bmp"/>
          <enum name="TextureWrap1" value="texture_clamp_repeat"/>
          <bool name="BilinearFilter1" value="true"/>
          <bool name="TrilinearFilter1" value="false"/>
