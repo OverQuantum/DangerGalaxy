@@ -206,7 +206,9 @@ coding demo1:
 111127: CHG: thrust mesh updated, texture replaced by my own
 111127: CHG: planet texture replaced by my own
 111127: CHG: moderate wormhole net generation algorithm - by wave algorithm
-111127: DBG: debug telepor to random wormhole and wormhole, close to player ship direction
+111127: DBG: debug teleport to random wormhole and wormhole, close to player ship direction
+111128: ADD: grid on map (including mesh and texture)
+111128: FIX: unnecessary star systems were included in 10x10 l.y. quad for wormhole generation
 
 
 
@@ -246,19 +248,20 @@ DONE:
 + visualization of wormhole links
 + debug teleport to wormhole
 + some triangulation for building wormhole net
++ FIX BUG: player galaxy coordinates in star system (used for wormholes e.t.c) should be quadrant-sticked
 
 
 TODO:
 
 * MAIN PLAN
-- BUG: .normalize() on Linux (??)
-! BUG: player galaxy coordinates in star system (used for wormholes e.t.c) should be quadrant-sticked
+- BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - wormhole network
   . advanced triangulation for building wormhole net
   - animation: opening on approaching mass and closing 
   - "killing" non-player objects
 - map
-  - grid
+  + grid
+  - print grid size
 . save & load
   + global position and speed
 - setup more in meshes, less in code
@@ -999,8 +1002,11 @@ public:
 private:
 	f64 mapScale;
 	vector2d centerOfMap;
+	vector2d shiftToQuadrant;//shift from galaxy quarant grid to center of physics (used for drawing detailed grid)
+	vector2d shiftToGalaxy;//shift from galaxy center to center of physics (used for drawing galaxy-scale grid)
 	core::array<MapObject*> MapObjectList;
 	void ClearObjects();
+	SceneNode* gridNode;
 };
 
 //FTLView - to render fly on FTL
@@ -3242,9 +3248,9 @@ JumpToQuasi:
 	delete gravInfo;//new in GamePhysics::GetGravityInfo
 
 	//TODO: use resourceManager to render?
-	videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
+	videoDriver->beginScene(true, true, video::SColor(255,0,0,0));
 	sceneManager->drawAll(); // draw the 3d scene
-	device->getGUIEnvironment()->drawAll(); // draw the gui environment (the logo)
+	device->getGUIEnvironment()->drawAll();
 	videoDriver->endScene();
 }
 
@@ -3511,6 +3517,11 @@ void MapSpaceView::Activate()
 
 	AddGalaxy(gamePhysics->GetGalaxyCoordinatesOfCenter());
 
+	gridNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/grid1.irrmesh"));
+	gridNode->setPosition(vector3df(0,0,0.1f));
+	gridNode->setScale(vector3df(200.0f,200.0f,1.0f));
+
+
 	scene::ICameraSceneNode* camera = sceneManager->addCameraSceneNode();
 	camera->setFOV(.7f);
 	camera->setTarget(vector3df(0,0,0));
@@ -3521,6 +3532,16 @@ void MapSpaceView::Activate()
 		vector3d center = gameRoot->GetPlayerShip()->GetPosition();
 		centerOfMap.X = center.X;
 		centerOfMap.Y = center.Y;
+
+		//get shifts to quadrant grid and galaxy center
+		shiftToGalaxy = gamePhysics->GetGalaxyCoordinatesOfCenter();
+		shiftToQuadrant = shiftToGalaxy;
+		shiftToQuadrant.X -= floor(shiftToQuadrant.X);//round shift to 1 l.y.
+		shiftToQuadrant.Y -= floor(shiftToQuadrant.Y);
+		shiftToQuadrant*=LIGHTYEAR;
+		shiftToGalaxy*=LIGHTYEAR;
+
+		//shiftToQuadrant
 	}
 
 	//cameraDistanceDegree = 5500.0;
@@ -3569,7 +3590,7 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		}
 
 	if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
-		//if (cameraDistanceDegree>0)
+		if (cameraDistanceDegree>-180)//1 unit have size about whole screen
 		{
 			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
 			cameraDistanceDegree-=frameDeltaTime*2000.0;
@@ -3581,21 +3602,66 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		}
 
 	//TODO: use resourceManager to render?
-	videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
+	//videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
+		videoDriver->beginScene(true, true, video::SColor(255,0,0,0));
 	sceneManager->drawAll();
-	device->getGUIEnvironment()->drawAll(); // draw the gui environment (the logo)
+	device->getGUIEnvironment()->drawAll();
 	videoDriver->endScene();
 }
 
 void MapSpaceView::UpdateCameraDistance()
 {
 	u32 i;
+	f64 gridScale;
+	vector2d gridShift;
+
+	//convert distance to scale
 	mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+
+	//update scale and position of all objects
 	for (i=0;i<MapObjectList.size();i++)
 	{
 		//MapObjectList[i]->UpdatePhysics(time);
 		MapObjectList[i]->UpdatePosition(mapScale,centerOfMap);
 	}
+
+	//draw grid
+
+	/*
+	//convert map scale into grid scale (unoptimized version)
+	gridScale = mapScale*LIGHTYEAR*2.0;
+
+	//round grid scale to (110,1100) range
+	while (gridScale>1100.0)
+		gridScale*=0.1;
+	while (gridScale<110.0)
+		gridScale*=10.;
+	*/
+
+	//convert map scale into grid scale (optimized version)
+	gridScale = cameraDistanceDegree+220.523766502312287933;//add shift
+	gridScale -= floor(gridScale*0.001302883445709755482953)*767.52836433134856133933;//round degree to ln(10)/0.003
+	gridScale = 1100.0*exp(gridScale*-0.003);//result will be in range (110,1100)
+
+
+	if (cameraDistanceDegree>8000)
+	{
+		//grid cell is l.y or larger - shift grid to galaxy center
+		gridShift = -(centerOfMap+shiftToGalaxy)*mapScale;
+	}
+	else
+	{
+		//grid cell is less than l.y - shift grid to qudrant grid
+		gridShift = -(centerOfMap+shiftToQuadrant)*mapScale;
+	}
+
+	//round grid shift to 1/20 of gridScale (i.e. to one texture step)
+	gridShift.X -= floor(20.0*gridShift.X/gridScale)*gridScale*0.05;
+	gridShift.Y -= floor(20.0*gridShift.Y/gridScale)*gridScale*0.05;
+
+	//update grid scene node
+	gridNode->setScale(vector3df((f32)gridScale,(f32)gridScale,1.0f));
+	gridNode->setPosition(vector3df((f32)gridShift.X,(f32)gridShift.Y,0.1f));
 }
 
 void MapSpaceView::ClearObjects()
@@ -5547,11 +5613,11 @@ lConnect:
 				coord2 = knownStars[star2]->GetGalaxyQuadrant();
 
 				//
-				//check that both stars are outside center quad
-				if ((coord1.X<knownStarsAnchor.X || coord1.X>(knownStarsAnchor.X+10) || 
-					 coord1.Y<knownStarsAnchor.Y || coord1.Y>(knownStarsAnchor.Y+10)) &&
-					(coord2.X<knownStarsAnchor.X || coord2.X>(knownStarsAnchor.X+10) || 
-					 coord2.Y<knownStarsAnchor.Y || coord2.Y>(knownStarsAnchor.Y+10)))
+				//check that both stars are outside center 10x10 quad
+				if ((coord1.X<knownStarsAnchor.X || coord1.X>(knownStarsAnchor.X+9) || 
+					 coord1.Y<knownStarsAnchor.Y || coord1.Y>(knownStarsAnchor.Y+9)) &&
+					(coord2.X<knownStarsAnchor.X || coord2.X>(knownStarsAnchor.X+9) || 
+					 coord2.Y<knownStarsAnchor.Y || coord2.Y>(knownStarsAnchor.Y+9)))
 					goto lSkip;
 
 
@@ -5659,6 +5725,8 @@ void GalaxyStarSystem::GenerateStar()
 	//TODO: this is uniform distribution among whole quadrant, but what if two systems will be very close in adjanced quadrants?
 	galaxyCoordinates.X = galaxyQuadrant.X+x/65536.0;
 	galaxyCoordinates.Y = galaxyQuadrant.Y+y/65536.0;
+	//galaxyCoordinates.X = galaxyQuadrant.X+0.5;//DEBUG
+	//galaxyCoordinates.Y = galaxyQuadrant.Y+0.5;
 }
 
 void GalaxyStarSystem::SetSeed(u8* seedData, u32 seedLen)
