@@ -209,6 +209,25 @@ coding demo1:
 111127: DBG: debug teleport to random wormhole and wormhole, close to player ship direction
 111128: ADD: grid on map (including mesh and texture)
 111128: FIX: unnecessary star systems were included in 10x10 l.y. quad for wormhole generation
+111129: CHG: simple text is available for all views
+111129: ADD: display grid size on map
+111129: ADD: zoom in/out with big steps
+111129: ADD: debug view wormhole network for +-100 l.y. quad
+111201: ADD: stargate in system (it does nothing yet)
+111201: ADD: basic mesh for stargate and its event horizon (+textures)
+111201: ADD: linked motion type (object follow other object as hard-linked to position and rotation)
+111202: ADD: galaxy coords<->stargate address basic converter (no encryption yet)
+111203: ADD: visibility property is handled
+111203: ADD: SpaceObject float properties array (not all props organized)
+111203: ADD: SpaceObject process mechanism
+111203: ADD: Stargate opening, waiting and closing processes
+111203: ADD: stargate travel by typing address
+111204: CHG: SpaceObject float properties organized into array
+111204: FIX: collision with moving output stargate
+111204: ADD: checks: stargate too far, stargate busy
+111204: ADD: scanning space (it prints address of stargate if found)
+111205: ADD: fp_mulmod and fp_powmod (for low-len RSA)
+111206: ADD: stargate address<->coord encryption
 
 
 
@@ -249,23 +268,39 @@ DONE:
 + debug teleport to wormhole
 + some triangulation for building wormhole net
 + FIX BUG: player galaxy coordinates in star system (used for wormholes e.t.c) should be quadrant-sticked
++ map grid
++ print map grid size
++ stargate system : generation of stargate in star system
++ stargate system : basic mesh
++ stargate system : typing destination address
++ stargate system : opening and closing
++ stargate system : jumping
++ organize float properties of spaceobject
++ stargate system : limit distance of signaling  
++ stargate system : getting address
++ stargate system : address<->coord encryption
 
 
 TODO:
 
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
+- stargate system
+  + address<->coord encryption
+  - "killing" non-player objects
+  - defence force-field around gate object
+  - better mesh and textures
 - wormhole network
-  . advanced triangulation for building wormhole net
-  - animation: opening on approaching mass and closing 
+  - animation: opening on approaching mass and closing - by process
+  .? advanced triangulation for building wormhole net
   - "killing" non-player objects
 - map
-  + grid
-  - print grid size
-. save & load
+  ? grid in metres for detailes zooms
+- save & load
   + global position and speed
+  . rotation, thrust
+  . object statuses
 - setup more in meshes, less in code
-- stargate system
 
 
 
@@ -347,6 +382,10 @@ Tab - switch to map
 F - jump to FTL (FTL works only if gravity < -5.75 dgr)
 F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
 +/-/* - activate PlusMinus Engine (* - third option)
+L - load saved game
+K - save game
+Y - type and send stargate address
+T - scan space (to get stargate address and so on)
 X - (DEBUG) dump galaxy coordinates into log
 J - (DEBUG) teleport to wormhole with direction, closest to direction of the ship
 H - (DEBUG) teleport to random wormhole and slow fall into
@@ -354,6 +393,7 @@ H - (DEBUG) teleport to random wormhole and slow fall into
 CONTROL on map:
 W/A/S/D - pan
 Up/Down - zoom
+PgUp/PgDn - zoom in/out by big steps
 Esc - back to RealSpace
 
 CONTROL on FTL:
@@ -456,6 +496,63 @@ text_string print_f64(f64 value, const wchar_t* format)
 	return tmp;
 }
 
+//Multiply two numbers modulus 3rd
+// [ Result = number1*number2 mod modulus ] 
+//Calculation proceed via standart doubling-and-adding technique
+//number2 = SUMM {s[i]*(2^i)} => number1*number2 = SUMM {s[i]*Dst*(2^i)} (mod modulus)
+u64 fp_mulmod(u64 number1, u64 number2, u64 modulus)
+{
+	u64 checkBit=1;//for checking bits
+	u64 number2mult=number2;//number2*2^0
+	u64 result=0;
+	for (u32 i=0;i<64;i++)
+	{
+		if ((number1&checkBit)!=0)//check i-th bit of number1
+		{
+			result+=number2mult;//add number2*2^i
+			if (result>=modulus) result-=modulus;//reduce if needed
+		}
+		else if (number1<checkBit)
+		{
+			break;//break if there is no more bits
+		}
+		checkBit<<=1;//shift checking bit
+		number2mult<<=1;//mul by 2
+		if (number2mult>=modulus) number2mult-=modulus;//and reduce if needed
+	}
+	return result;
+}
+
+//Power number modulus
+// [ Result = number^power mod modulus ]
+//Calculation proceed via standart squaring-and-multiplying technique
+//power = SUMM {s[i]*(2^i)} => number^power = PROD {s[i]*number^(2^i)} (mod modulus)
+u64 fp_powmod(u64 number, u64 power, u64 modulus)
+{
+	u64 checkBit=1;//for checking bits
+	u64 numberPow=number;
+
+	//initial set
+	u64 result=1;
+	if ((power&checkBit)!=0)
+		result = number;
+
+	for (u32 i=1;i<64;i++)
+	{
+		numberPow = fp_mulmod(numberPow,numberPow,modulus);//square
+		checkBit<<=1;//shift checking bit
+		if ((power&checkBit)!=0)//check bit
+		{
+			result = fp_mulmod(result,numberPow,modulus);//mul by number^(2^i)
+		}
+		else if (power<checkBit)
+		{
+			break;//break if there is no more bits
+		}
+	}
+	return result;
+}
+
 //#########################################################################
 //classes
 
@@ -511,6 +608,7 @@ public:
 		return KeyIsDown[keyCode];
 	}
 
+	// This is used to check whether a key is pressed once
 	virtual bool IsKeyPressed(EKEY_CODE keyCode) 
 	{
 		if (KeyIsDown[keyCode])
@@ -547,18 +645,20 @@ class LockCounted {
 };
 
 
-//Hold info about gravity in certain point
+//Hold info about gravity at certain point
 class GravityInfo {
 	public:
-		text_string print();
+		text_string print();//print information
 
-		//text_string printableInfo;
-		f64 maxGravity;
-		SpaceObject* maxGravityObject;
-		f64 secondMaxGravity;
-		SpaceObject* secondMaxGravityObject;
+		//max gravity:
+		f64 maxGravity; //value
+		SpaceObject* maxGravityObject;//emitting object
 
-		void UpdateGravityInfoOrbit(SpaceObject* orbitingObject);
+		//second max gravity
+		f64 secondMaxGravity; //value
+		SpaceObject* secondMaxGravityObject;//emitting object
+
+		void UpdateGravityInfoOrbit(SpaceObject* orbitingObject);//update orbiting info
 
 		//Kepler orbit elements (around maxGravityObject)
 		f64 orbitSemimajorAxis;//Semimajor axis
@@ -566,6 +666,7 @@ class GravityInfo {
 		f64 orbitArgumentPeriapsis;//Argument of periapsis
 };
 
+//Hold information about wormhole between two stars (without references to objects, just coordinates)
 class WormholeInfo {
 	public:
 		vector2ds Star1;
@@ -573,18 +674,21 @@ class WormholeInfo {
 };
 
 
-//SpaceObject - is any object in current visible space
+//SpaceObject - any object in current RealSpace
 class SpaceObject {
 
 	public:
 
-		//TODO: think on subclassing space objects by motion type
+		//TODO: think on subclassing space objects
+
+		//Type of object motion
 		enum MotionType : s32 {
-			MOTION_NONE,
-			MOTION_ORBITAL,
-			MOTION_NAVIGATION,
-			MOTION_FTL,
-			MOTION_PLUSMINUS,
+			MOTION_NONE,        //Object not moving at all
+			MOTION_ORBITAL,     //Object is orbiting circular orbit around another
+			MOTION_LINKED,      //Object is linked to another object and follow him as fixed-linked
+			MOTION_NAVIGATION,  //Object is self-navigating
+			MOTION_FTL,         //Object moves at FTL
+			MOTION_PLUSMINUS,   //Object moves at PlusMinus
 		};
 
 		enum ControlType {
@@ -594,114 +698,120 @@ class SpaceObject {
 			CONTROL_ROTATION_SPEED_RELATIVE,
 		};
 
+		//Integer and boolean properties
 		enum IntProperty : s32 {
 			VISIBLE_TO_PLAYER=0, //bool: 0 - false, 1 - true
 			MOTION_TYPE,         //See MotionType
 			EMIT_GRAVITY,        //bool: 0 - false, 1 - true
 			AFFECTED_BY_GRAVITY, //bool: 0 - false, 1 - true
 			WORMHOLE,            //bool: 0 - false, 1 - true
-			WORMHOLE_TO_X,       //s32
-			WORMHOLE_TO_Y,       //s32
+			TRAVEL_TO_X,         //s32, x coordinate of wormhole or stargate travel
+			TRAVEL_TO_Y,         //s32, y coordinate --- !! ----
+			STARGATE,            //bool: 0 - false, 1 - true
+			CURRENT_PROCESS,     //s32, see enum ProcessType
 
-			PROPERTIES_COUNT,//Only for array allocation
+			INT_PROPERTIES_COUNT,//Only for array allocation
 		};
 
-		SpaceObject();
-		~SpaceObject();
+		//Floating point properties
+		enum FloatProperty : s32 {
+			MASS=0,              //mass - for calc gravity
+			GEOMETRY_RADIUS,     //raduis for map marker and so on
+			GRAVITY_MIN_RADIUS,  //raduis for calc gravity only
 
-		//getters
+			THRUST_POWER,        //current thrust
+			MAX_THRUST,          //max thrust
+			ROTATION_ANGLE,      //current rotation angle  (in radians)
+			ROTATION_SPEED,      //rotation speed
+			MAX_ROT_THRUST,      //max rotation thrust
+
+			ORBITAL_RADIUS,      //radius of an orbit around orbitingObject
+			ORBITAL_PERIOD,      //period of orbiting
+			ORBITAL_EPOCH_PHASE, //phase of orbiting (angle in time=0, in radians)
+
+			LINK_ROTATION_ANGLE, //rotation relative to parent object (in radians)
+
+			PROCESS_START_TIME,  //Time, when current proccess started
+
+			MAX_FTL_GRAVITY,     //Max acceleration for FTL possible
+
+			MARKER_SIZE,         //Size of marker on map
+
+			FLOAT_PROPERTIES_COUNT, //Only for array allocation
+		};
+
+		//Type of ongoing process
+		enum ProcessType : s32 {
+			PROCESS_NONE,                //nothing is going on
+			PROCESS_STARGATE_OPENING,    //stargate opens, 1 second
+			PROCESS_STARGATE_WAITING,    //stargate waiting object to pass, 15 seconds
+			PROCESS_STARGATE_CLOSING,    //stargate closing, 1 second
+		};
+
+		SpaceObject();//Constuctor
+		~SpaceObject();//Destructor
+
+		//Getters
 		s32 GetIntProperty(IntProperty propertyNumber) {return IntProperties[propertyNumber];}
-		//bool IsEmittingGravity() {return isEmitGravity;}
-		f64 GetThrust() {return thrustPower;}
-		f64 GetMass() {return mass;}
+		f64 GetFloatProperty(FloatProperty propertyNumber) {return FloatProperties[propertyNumber];}
 		vector3d GetPosition() {return position;}
+		vector3d GetPrevPosition() {return prevPosition;}
 		vector3d GetSpeed();
 		vector3d GetDirection();
-		f64 GetRotation() {return rotation;}
 		text_string GetName() {return name;}
-		//MotionType GetMotionType() {return motionType;}
-		//f32 GetMaxThrust() {return maxThrust;}
-		//f32 GetMaxRotationThrust() {return maxRotationThrust;}
-		f64 GetMaxFTLGravity() {return maxFTLGravity;}
-		f64 GetRaduis() {return geometryRadius;}
-
 		SceneNode* GetNode() {return sceneNode;}
 
-		//setters
-		void SetPosition(vector3d newPos) {position = newPos;}
+		//Setters
+		void SetPosition(vector3d newPos) {position = newPos; prevPosition = newPos;}
 		void SetSpeed(vector3d newSpeed) {speed = newSpeed;}
-		void SetRotation(f64 newRotation) {rotation = newRotation;}
-		void SetNode(SceneNode * node) {sceneNode = node;}
-		void SetMarkerNode(SceneNode * node, f64 size) {sceneMarkerNode = node; sizeMarker = size;}
-		//void SetMotionType(MotionType newType) {motionType = newType;}
+		void SetNode(SceneNode * node);
+		void SetMarkerNode(SceneNode * node, f64 size);
 		void SetOrbitalParams(SpaceObject* parent, f64 radius, f64 Period, f64 EpochPhase);
+		void SetLinkedParams(SpaceObject* parent, vector3d linkPos, f64 linkRot);
+		void SetOrbitalParent(SpaceObject* parent) {orbitingObject = parent;}
 		void SetPhysics(GamePhysics* physicsOwner) {physics = physicsOwner;}
-		void SetMaxThrust(f64 newMaxThrust, f64 newMaxRotationThrust) {maxThrust = newMaxThrust; maxRotationThrust = newMaxRotationThrust; }
-		void SetMass(f64 newMass) {mass = newMass;}
-		void SetMassRadius(f64 newMassRadius) {gravityMinRadius = newMassRadius;}
-		void SetRadius(f64 newRadius) {geometryRadius = newRadius;}
-		//void SetGravity(bool emit, bool affected) {isEmitGravity = emit,isAffectedByGravity = affected;}
 		void SetName(text_string newName) {name = newName;}
-		void SetMaxFTLGravity(f64 newGravity) {maxFTLGravity = newGravity;}
-		void SetIntProperty(IntProperty propertyNumber, s32 newValue) {IntProperties[propertyNumber]=newValue;}
+		void SetIntProperty(IntProperty propertyNumber, s32 newValue);
+		void SetFloatProperty(FloatProperty propertyNumber, f64 newValue);
 		
-		//void SetThrust(f64 newThrust) {thrustPower = newThrust;}
-		//void SetRotationSpeed(f64 newRotSpeed) {rotationSpeed = newRotSpeed;}
-
-		vector3d GetGravityAcceleration(vector3d location);
-		vector3d GetXGravityAcceleration(vector3d location);
+		vector3d GetGravityAcceleration(vector3d location);//Get gravity, emitted by this object
+		vector3d GetXGravityAcceleration(vector3d location);//Get X-gravity, emitted by this object
 		void SetControl(f64 newValue, ControlType type);
 
-		void AutopilotBreak();
-		void AutopilotOrbiting();
-		void AutopilotSetSpeed(vector3d requiredSpeed);
+		void AutopilotBreak();//Stopping
+		void AutopilotOrbiting();//Setting to orbit
+		void AutopilotSetSpeed(vector3d requiredSpeed);//Matching speed
 
 		void JumpToFTL(f64 ftlSpeed);
 		void BreakFTL(f64 remainingSpeed);
 
 		virtual void FallIntoWormhole(SpaceObject* wormhole);
+		virtual void FallIntoStargate(SpaceObject* wormhole);
 
 		//updating
 		void UpdatePhysics(f64 time);
 		void UpdateSceneNode();
 		void UpdateSceneNode(SpaceObject* centerSceneObject);
 		void UpdateMarkerNode(f64 cameraDistance);
-	protected:
-		//bool isEmitGravity;//for calulcation of gravity field. Gravity is emitted by massive objects - stars, planets, moons, black holes, asteroids. May be by specific weapons or traps
-		//bool isAffectedByGravity;//for using gravity field. Affected in game engine are ships.
-		//bool isVisibleToPlayer;//object is visible for player. Invisible are small objects, cloacked, unexplored and so on
-		//MotionType motionType;//how object motion is calculated
 
-		s32 IntProperties[PROPERTIES_COUNT];
+	protected:
+		//Arrays of properties
+		s32 IntProperties[INT_PROPERTIES_COUNT];
+		f64 FloatProperties[FLOAT_PROPERTIES_COUNT];
+
+		vector3d position;//current position in space, coordinates (zero at star system center of mass)
+		vector3d prevPosition;//previous position in space (used for checking collisions)
+		vector3d speed;//current motion speed, relative to "background stars"
+
+		vector3d linkPosition;//position relative to parent object
 
 		text_string name;
 
-		f64 mass;//for calc gravity
-		f64 geometryRadius;//for map marker and so on
-		f64 gravityMinRadius;//only for calc gravity
-		f64 maxThrust;
-		f64 maxRotationThrust;
-
-		GamePhysics* physics;
-		SpaceObject* orbitingObject;
-		f64 orbitalRadius;//radius, orbits are currently circular
-		f64 orbitalPeriod;//period
-		f64 orbitalEpochPhase;//phase at time zero
-
-		f64 rotationSpeed;
-		f64 thrustPower;
-		f64 sizeMarker;
-		f64 ftlSpeed;//in multiple of lightspeed
-
-		f64 maxFTLGravity;//Max acceleration for FTL possible
-
-		vector3d position;//current position in space, coordinates (zero at star system center of mass)
-		vector3d speed;//current motion speed, relative to "background stars"
-		f64 rotation;//rotation angle, radians (zero is direction to down)
+		SpaceObject* orbitingObject;//parent object for orbiting or linked-motion
+		GamePhysics* physics;//reference to GamePhysics
 
 		SceneNode * sceneNode; //Irrlich renderable object
-		//scene::IBillboardSceneNode * sceneMarkerNode; //Irrlich renderable object - for displaying from a far
-		SceneNode * sceneMarkerNode; //Irrlich renderable object - for displaying from a far
+		SceneNode * sceneMarkerNode; //sceneNode of map-marker type - for displaying from a far
 		//vector3d acceleration; //
 };
 
@@ -710,14 +820,19 @@ class GamePhysics {
 	public:
 		GamePhysics();
 
-		f64 globalTime;//TODO: move field into private area
+		f64 globalTime;//Global time, in seconds
+		//TODO: move field into private area
 
-		bool IsInterstellar() {return isInterstellar;}
+		//Getters
+		bool IsInterstellar() {return isInterstellar;}//Are we in insterstellar space
 		vector2d GetGalaxyCoordinatesOfCenter() {return galaxyCoordinatesOfCenter;}
 		vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 		DG_Game* GetRoot() {return gameRoot;}
 		SpaceObject* GetWormholeTo(vector2ds galaxyQuadrant);
+		SpaceObject* GetFirstObject(SpaceObject::IntProperty prop, s32 value);
+		void GetObjectsAtDistance(core::array<SpaceObject*>* list, vector3d location, f64 distance);
 
+		//Setters
 		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
 		void SetGalaxyQuadrant(vector2ds newQuadrant) {galaxyQuadrant = newQuadrant;}
 		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
@@ -735,21 +850,19 @@ class GamePhysics {
 
 		vector3d FindRandomLocationWithSpecificGravity(f64 gravityMin, f64 gravityMax);
 		vector3d FindRandomLocationWithSpecificXGravity(f64 gravityMin, f64 gravityMax);
-		
 
 		vector3d GetGravityAcceleration(vector3d location);
 		vector3d GetXGravityAcceleration(vector3d location);
 		GravityInfo* GetGravityInfo(vector3d location);
 
-		void CheckCollisions(SpaceObject* object, vector3d prevPosition);
+		void CheckCollisions(SpaceObject* object);
 		
-		//bool IsFTLPossible(vector3d location);
 		bool IsFTLPossible(vector3d location, f64 gravityLimit);
 		bool IsPlusMinusPossible(vector3d location);
 
-		//InfoFTL* CheckFTLBreak(vector3d start, vector3d end);
+		void SendStargateAddress(SpaceObject* sender, u64 address);
+
 		InfoFTL* CheckFTLBreak(vector3d start, vector3d end, f64 gravityLimit);
-		//bool IsOutOfStarSystem(vector3d location);
 		bool CheckLeaveStarSystem();
 
 		void GoInterstellar();
@@ -759,24 +872,25 @@ class GamePhysics {
 
 		void DebugJumpToWormhole(u32 param);
 
-		void MakeMap(MapSpaceView* mapView);
+		void MakeMap(MapSpaceView* mapView);//Provide MapSpaceView with info about all objects
+
 	private:
-		bool calcCollisions;//Perform collision calculation or not
-		bool isInterstellar;//Nothing except ship
+		bool calcCollisions;//Perform collision calculations or not
+		bool isInterstellar;
 		f64 maxGravityCheckRadiusSQ; //if object is farther from this radius, then we could skip checking of gravity for FTL, radius squared as it is much easier to check this way
 		f64 timeSpeed;//speed of time going, 1.0 for normal, 100 for faster
 
 		DG_Game* gameRoot;
 		PlayerShip* playerShip;
-		core::array<SpaceObject*> listObjects;
+		core::array<SpaceObject*> listObjects;//All known objects
 		vector2d galaxyCoordinatesOfCenter;
-		vector2ds galaxyQuadrant;//valid only if isInterstellar 
+		vector2ds galaxyQuadrant;
 
 		void ClearObjects();//all but player
 
 };
 
-//ResourceManager - manage game resource
+//ResourceManager - manage game resources
 class ResourceManager
 {
 	public:
@@ -793,13 +907,17 @@ class ResourceManager
 		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
 		SpaceObject* MakeBarycenter();
 		SpaceObject* MakeWormhole();
+		SpaceObject* MakeStargate();
 		SpaceObject* MakeShip();
 		SpaceObject* LoadNodesForShip(SpaceObject* ship);
 		void AddMarker(SpaceObject* toObject, u32 type);
 
 		SceneNode* NewShipNode();
 
+		gui::IGUIStaticText* getSimpleText() {return simpleTextToDisplay;}
+
 	private:
+		gui::IGUIStaticText* simpleTextToDisplay;
 		GamePhysics* physics;
 
 		IrrlichtDevice* device;
@@ -825,16 +943,10 @@ class DG_Game {
 		void Update();
 		void Close();
 
-		/*
-		//Deprecated
-		void ActivateMap();
-		void ActivateRealSpace();
-		void ActivateFTL();
-		*/
-
 		Galaxy* GetGalaxy() {return wholeGalaxy;}
 		ResourceManager* GetResourceManager() {return resourceManager;}
 		PlayerShip* GetPlayerShip() {return playerShip;}
+		GalaxyStarSystem* GetCurrentSystem() {return currentStarSystem;}
 
 		s32 AcviateView(ViewType newView);
 		s32 CloseView(ViewType oldView);
@@ -848,24 +960,10 @@ class DG_Game {
 		void SaveGame();
 		void LoadGame();
 
-	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
-	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
-
-		
-		//void ChangeState(StateClass *State);
-		//StateClass *GetState() { return State; }
-
 		bool IsDone() { return Done; }
 		void SetDone(bool Value) { Done = Value; }
-		//float GetTimeStep() { return TimeStep; }
-		//void ResetTimer();
-
-		//MAP
-		s32 cameraMapDistanceDegree;
 
 	private:
-		//f64 MOVEMENT_SPEED;
-		// Flags
 		ResourceManager* resourceManager;
 		Galaxy* wholeGalaxy;
 
@@ -877,21 +975,19 @@ class DG_Game {
 		u32 then;
 		GamePhysics * gamePhysics;
 		bool Done, MouseWasLocked;
-		SceneNode * node;
 		MyEventReceiver* receiver;
 		scene::ISceneManager* smgr;
 		video::IVideoDriver* driver;
 		s32 lastFPS;
 
-		s32 gameMode;//0 - flying, 1 - map
 
-		core::array<ViewType*> viewStack;
-
+		//Views
 		RealSpaceView* RealSpace;
 		MapSpaceView* SectorMap;
 		FTLView* FTLSpace;
 		QuasiSpaceView* QuasiSpace;
 
+		core::array<ViewType*> viewStack;
 		GameView* activeView;
 
 		void InternalAcviateView(ViewType newView);
@@ -909,9 +1005,6 @@ public:
 
 	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
 	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
-	//void SetDevice(IrrlichtDevice* newDevice) {device = newDevice;}
-	//void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
-	//void SetEventReceiver(MyEventReceiver* newReceiver) {eventReceiver = newReceiver;}
 	void SetPhysics(GamePhysics* newPhysics) {gamePhysics = newPhysics;}
 
 	void DisplayMessage(text_string message);
@@ -930,6 +1023,8 @@ protected:
 class RealSpaceView : public GameView
 {
 public:
+	RealSpaceView();
+
 	void Init();
 	void Activate();
 	void Update(f64 frameDeltaTime);
@@ -944,15 +1039,15 @@ public:
 
 private:
 	f64 cameraDistance;
+	u32 typing;
+	text_string typingText;
+	text_string typingTextPrev;
 
 	PlayerShip* playerShip;
 	//f64 playerThrust; //TODO: move to other class (?)
 
 	scene::ICameraSceneNode* camera;
 	SceneNode* playerShipThrust;
-	//scene::IParticleSystemSceneNode * playerThrustParticles;
-	//scene::IParticleEmitter*  playerThrustEmitter;
-	//scene::IParticleSystemSceneNode* motionIndicator;
 	gui::IGUIStaticText* simpleTextToDisplay;
 };
 
@@ -1001,12 +1096,14 @@ public:
 
 private:
 	f64 mapScale;
+	f64 gridCellSize;
 	vector2d centerOfMap;
 	vector2d shiftToQuadrant;//shift from galaxy quarant grid to center of physics (used for drawing detailed grid)
 	vector2d shiftToGalaxy;//shift from galaxy center to center of physics (used for drawing galaxy-scale grid)
 	core::array<MapObject*> MapObjectList;
 	void ClearObjects();
 	SceneNode* gridNode;
+	gui::IGUIStaticText* simpleTextToDisplay;
 };
 
 //FTLView - to render fly on FTL
@@ -1049,7 +1146,6 @@ public:
 	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 	f64 GetControlThrust() {return controlThrust;}
 
-	//void SetGalaxyCoordinates(vector2d newPosition) {galaxyCoordinates = newPosition;}
 	void UpdateGalaxyCoordinates();
 
 	void JumpToQuasiSpace(s32 direction);//+1 for Plus, -1 for Minus, 0 for random (+2/-2)
@@ -1058,6 +1154,8 @@ public:
 	void FallIntoWormhole(SpaceObject* wormhole);
 	void SetControlThrust(f64 newThrust);
 
+	void FallIntoStargate(SpaceObject* wormhole);
+	void ScanSpace();
 
 	void DebugPrint_QuasiSpace();
 
@@ -1082,14 +1180,16 @@ public:
 	void Init();//creation
 	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);//Get star system in quadrant
 	GalaxyStarSystem* GetNearStarSystem(vector2d coordinates);//Get nearest star system by exact coordinates
-	//void AddNearStarSystems(GamePhysics * gamePhysics);
 	void AddNearStarSystems(MapSpaceView* mapView);//Add markers of near star system to MapView
 	u32 CheckStarPresence(vector2ds coordinates);//Check only presence of star in quadrant
+	u32 CheckStargatePresence(vector2ds coordinates, bool checkStar);//Check presence of stargate in system
 	u32 IsInGrid(vector2ds coordinates);//Check coordinates for being inside 131072x131072 grid
 	GalaxyStarSystem* GetStartStarSystem(); //Get star system of player start
 	void UpdatePlayerLocation(vector2d coordinates);//For updating cache of stars
-	void GenerateWormholes();
 	void GetWormholesFrom(vector2ds quadrant, core::array<WormholeInfo*>* list);
+
+	u64 Coordinates2StargateAddress(vector2ds quadrant);//convert coordinates to address
+	vector2ds StargateAddress2Coordinates(u64 address);//convert address to coordinates  (two error cases possible: - address is greater than PK and decryption does not have padding)
 
 	//void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
 	void SaveMapTexture();
@@ -1098,6 +1198,7 @@ public:
 	s32 HilbertCurveDirection(s32 x, s32 y, s32 direction);
 
 	GalaxyStarSystem* DebugJump();
+	void DebugShowWormholes();
 
 private:
 	bool wormholesGenerated;
@@ -1111,6 +1212,13 @@ private:
 
 	f64 starCountEstimation;// amount of star systems in a galaxy, estimation by stellar density field
 
+	//constants of stargate address/coordinates conversion function (includes RSA encryption/decryption)
+	u64 sgPublicKeyMod;//n - public key modulus
+	u64 sgPublicKeyExp;//e - public key exponent
+	u64 sgPrivateKeyExp;//d - private key exponent (non-CRT)
+	u64 sgCoordXorValue;//value to xor coordinates additionally
+	u64 sgAddressAddValue;//value to add to address additionally
+
 	u8 galaxySeed[16];//seed of whole galaxy
 	DeterminedRandomGenerator* galaxyRNG;//
 
@@ -1121,7 +1229,9 @@ private:
 	vector2ds knownStarsAnchor;//"center" of cache
 
 	GalaxyStarSystem* SeedStar(vector2ds coordinates);//seed star system from galaxy seed. Prereq: galaxyRNG must be seeded with coordinates in CheckStarPresence() or so
-	void UpdateKnownStars();//Updates caches (ex. in case of player moves to quadrant other than center of cache)
+	void UpdateKnownStars(s32 param = 0);//Updates caches (ex. in case of player moves to quadrant other than center of cache)
+
+	void GenerateWormholes(s32 param = 0);
 	void ClearWormholes();
 	void ClearKnownStars();
 };
@@ -1139,6 +1249,7 @@ public:
 	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 	text_string GetName() {return name;}
 	f64 GetWormholeDistance() {return wormholeDistance;}
+	u64 GetStargateAddress() {return stargateAddress;}
 
 	void SetSeed(u8* seedData, u32 seedLen);
 
@@ -1155,6 +1266,7 @@ private:
 	f64 wormholeDistance;//distance of wormholes from center
 	u32 componentIndex;//for naming stars in systems
 	u32 planetIndex;//for numbering planets
+	u64 stargateAddress;//address of this system
 	DeterminedRandomGenerator* starRNG;
 	vector2d galaxyCoordinates;
 	vector2ds galaxyQuadrant;
@@ -1162,6 +1274,7 @@ private:
 
 	SpaceObject* FinalizeComponent(ResourceManager* resourceManager, StarComponent* component);
 	void GenerateWormholes(ResourceManager* resourceManager, StarComponent* component, Galaxy* galaxy);
+	SpaceObject* GenerateStargate(ResourceManager* resourceManager, StarComponent* component, Galaxy* galaxy);
 
 };
 
@@ -1291,21 +1404,6 @@ public:
 	StarComponent* subComponentB; //least massive, 0 if current is single object
 };
 
-/*
-class ResourceManager
-{
-public:
-	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
-	void SetVideoDriver(video::IVideoDriver* newVideoDriver) {videoDriver = newVideoDriver;}
-
-	SceneNode* MakeShip();
-
-private:
-	scene::ISceneManager* sceneManager;
-	video::IVideoDriver* videoDriver;
-};*/
-
-
 //#########################################################################
 //Class methods
 
@@ -1347,7 +1445,7 @@ void GravityInfo::UpdateGravityInfoOrbit(SpaceObject* orbitingObject)
 	relativePosition = orbitingObject->GetPosition() - maxGravityObject->GetPosition();
 	relativeSpeed = orbitingObject->GetSpeed() - maxGravityObject->GetSpeed();
 
-	invAxis = 2.0/relativePosition.getLength() - relativeSpeed.getLengthSQ()/(G_CONSTANT*maxGravityObject->GetMass());
+	invAxis = 2.0/relativePosition.getLength() - relativeSpeed.getLengthSQ()/(G_CONSTANT*maxGravityObject->GetFloatProperty(SpaceObject::MASS));
 
 	//Eccentricity, e, is calc using specific relative angular momentum: e = sqrt(1+h*h*q*q/2), where h=|H|, q = 1/a
 	specificRAMomentum = relativeSpeed.X * relativePosition.Y - relativeSpeed.Y * relativePosition.X;
@@ -1363,7 +1461,7 @@ void GravityInfo::UpdateGravityInfoOrbit(SpaceObject* orbitingObject)
 	//orbitEccentricity = sqrt(1+specificRAMomentum*specificRAMomentum*invAxis*invAxis*.5);//not work
 
 	//TODO: optimize G_CONSTANT*maxGravityObject->GetMass() combined with previous use
-	orbitEccentricity = sqrt(1-specificRAMomentum*specificRAMomentum*invAxis/(G_CONSTANT*maxGravityObject->GetMass()));
+	orbitEccentricity = sqrt(1-specificRAMomentum*specificRAMomentum*invAxis/(G_CONSTANT*maxGravityObject->GetFloatProperty(SpaceObject::MASS)));
 	//orbitEccentricity = -2;//not calced
 }
 
@@ -1420,11 +1518,12 @@ SpaceObject::SpaceObject()
 {
 	//initialize simpliest object
 	position = vector3d(0);
+	prevPosition = vector3d(0);
 	speed = vector3d(0);
-	rotation = 0;
+	SetFloatProperty(ROTATION_ANGLE,0);
 	sceneNode = 0;
 	sceneMarkerNode = 0;
-	sizeMarker = 0.01;
+	SetFloatProperty(MARKER_SIZE,0.01);
 	name = L"";
 
 
@@ -1432,23 +1531,33 @@ SpaceObject::SpaceObject()
 	SetIntProperty(AFFECTED_BY_GRAVITY,0);
 	SetIntProperty(EMIT_GRAVITY,0);
 	SetIntProperty(WORMHOLE,0);
-	SetIntProperty(WORMHOLE_TO_X,0);
-	SetIntProperty(WORMHOLE_TO_Y,0);
+	SetIntProperty(TRAVEL_TO_X,0);
+	SetIntProperty(TRAVEL_TO_Y,0);
 	SetIntProperty(MOTION_TYPE,MOTION_NONE);
+	SetIntProperty(STARGATE,0);
+	SetIntProperty(CURRENT_PROCESS,PROCESS_NONE);
 
-	ftlSpeed = 10.0;
+	SetFloatProperty(PROCESS_START_TIME,0);
+
+	linkPosition = vector3d(0);
+	SetFloatProperty(LINK_ROTATION_ANGLE,0);
+
+	//ftlSpeed = 10.0;
 	//isEmitGravity = false;
 	//isAffectedByGravity = false;
 	//motionType = MOTION_NONE;
 	//isVisibleToPlayer = false;
-	mass = 0;
-	gravityMinRadius = 1.0;
-	geometryRadius = 0.0;
+	SetFloatProperty(MASS,0);
+	SetFloatProperty(GRAVITY_MIN_RADIUS,1);
+	SetFloatProperty(GEOMETRY_RADIUS,0);
+	SetFloatProperty(MAX_THRUST,0);
+	SetFloatProperty(MAX_ROT_THRUST,0);
 	orbitingObject = 0;
-	orbitalRadius = 1.0;
-	orbitalPeriod = 1.0;
-	orbitalEpochPhase = 0;
-	maxFTLGravity = 0.003;
+	SetFloatProperty(ORBITAL_RADIUS,1.0);
+	SetFloatProperty(ORBITAL_PERIOD,1.0);
+	SetFloatProperty(ORBITAL_EPOCH_PHASE,0);
+	SetFloatProperty(ROTATION_SPEED,0);
+	SetFloatProperty(MAX_FTL_GRAVITY,0.003);
 }
 
 SpaceObject::~SpaceObject()
@@ -1460,7 +1569,7 @@ SpaceObject::~SpaceObject()
 
 vector3d SpaceObject::GetDirection()
 {
-	return vector3d(cos(rotation),sin(rotation),0);
+	return vector3d(cos(GetFloatProperty(ROTATION_ANGLE)),sin(GetFloatProperty(ROTATION_ANGLE)),0);
 }
 
 
@@ -1468,12 +1577,12 @@ vector3d SpaceObject::GetDirection()
 void SpaceObject::UpdateSceneNode()
 {
 	sceneNode->setPosition(vector3df((f32)position.X,(f32)position.Y,0));
-	sceneNode->setRotation(vector3df(0,0,(f32)(rotation*RADTODEG64)));
+	sceneNode->setRotation(vector3df(0,0,(f32)(GetFloatProperty(ROTATION_ANGLE)*RADTODEG64)));
 	if (sceneMarkerNode)
 	{
 		//TODO: optimize?
 		sceneMarkerNode->setPosition(vector3df((f32)position.X,(f32)position.Y,0.01f));
-		sceneMarkerNode->setRotation(vector3df(0,0,(f32)(rotation*RADTODEG64)));
+		sceneMarkerNode->setRotation(vector3df(0,0,(f32)(GetFloatProperty(ROTATION_ANGLE)*RADTODEG64)));
 	}
 }
 
@@ -1484,13 +1593,13 @@ void SpaceObject::UpdateSceneNode(SpaceObject* centerSceneObject)
 	if (sceneNode)
 	{
 		sceneNode->setPosition(vector3df(positionX,positionY,0));
-		sceneNode->setRotation(vector3df(0,0,(f32)(rotation*RADTODEG64)));
+		sceneNode->setRotation(vector3df(0,0,(f32)(GetFloatProperty(ROTATION_ANGLE)*RADTODEG64)));
 	}
 	if (sceneMarkerNode)
 	{
 		//TODO: optimize?
 		sceneMarkerNode->setPosition(vector3df(positionX,positionY,0.01f));
-		sceneMarkerNode->setRotation(vector3df(0,0,(f32)(rotation*RADTODEG64)));
+		sceneMarkerNode->setRotation(vector3df(0,0,(f32)(GetFloatProperty(ROTATION_ANGLE)*RADTODEG64)));
 	}
 }
 
@@ -1512,11 +1621,19 @@ void SpaceObject::Rotate(f32 degrees)
 void SpaceObject::SetOrbitalParams(SpaceObject* parent, f64 radius, f64 period, f64 epochPhase)
 {
 	orbitingObject = parent;
-	orbitalRadius = radius;
-	orbitalPeriod = period;
-	orbitalEpochPhase = epochPhase;
+	SetFloatProperty(ORBITAL_RADIUS,radius);
+	SetFloatProperty(ORBITAL_PERIOD,period);
+	SetFloatProperty(ORBITAL_EPOCH_PHASE,epochPhase);
 	//motionType = MOTION_ORBITAL;
 	SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_ORBITAL);
+}
+
+void SpaceObject::SetLinkedParams(SpaceObject* parent, vector3d linkPos, f64 linkRot)
+{
+	orbitingObject = parent;
+	linkPosition = linkPos;
+	SetFloatProperty(LINK_ROTATION_ANGLE,linkRot);
+	SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_LINKED);
 }
 
 void SpaceObject::SetControl(f64 newValue, ControlType type)
@@ -1524,19 +1641,19 @@ void SpaceObject::SetControl(f64 newValue, ControlType type)
 	switch(type)
 	{
 		case CONTROL_THRUST_ABSOLUTE:
-			thrustPower = newValue;
+			SetFloatProperty(THRUST_POWER,newValue);
 			//check to max value!
 			break;
 		case CONTROL_THRUST_RELATIVE:
-			thrustPower = newValue*maxThrust;
+			SetFloatProperty(THRUST_POWER,newValue*GetFloatProperty(MAX_THRUST));
 			//check to max value!
 			break;
 		case CONTROL_ROTATION_SPEED_ABSOLUTE:
-			rotationSpeed = newValue;
+			SetFloatProperty(ROTATION_SPEED,newValue);
 			//check to max value!
 			break;
 		case CONTROL_ROTATION_SPEED_RELATIVE:
-			rotationSpeed = newValue*maxRotationThrust;
+			SetFloatProperty(ROTATION_SPEED,newValue*GetFloatProperty(MAX_ROT_THRUST));
 			//check to max value!
 			break;
 		default:
@@ -1612,13 +1729,13 @@ void SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
 
 	if (abs(whereToRotate)<0.005 && direction.dotProduct(changeSpeed)>0)
 	{
-		rotation = atan2(changeSpeed.Y,changeSpeed.X);//Force set rotation to required angle
+		SetFloatProperty(ROTATION_ANGLE,atan2(changeSpeed.Y,changeSpeed.X));//Force set rotation to required angle
 
 		f64 k=1;
-		if (changeSpeed.getLength()<k*maxThrust*0.05)//this assumes minimum frame interval is 20 ms, 
+		if (changeSpeed.getLength()<k*GetFloatProperty(MAX_THRUST)*0.05)//this assumes minimum frame interval is 20 ms, 
 		{
 			//TODO: get minimum frame interval from physics or game?
-			k = 200.0*changeSpeed.getLength()/maxThrust;//adjust breaking thrust power to partial of speed
+			k = 200.0*changeSpeed.getLength()/GetFloatProperty(MAX_THRUST);//adjust breaking thrust power to partial of speed
 		}
 		SetControl(k,CONTROL_THRUST_RELATIVE);
 		return;
@@ -1639,7 +1756,7 @@ void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 {
 	if (sceneMarkerNode)
 	{
-		f64 scale = .2*sizeMarker*cameraDistance;///log(cameraDistance);
+		f64 scale = .2*GetFloatProperty(MARKER_SIZE)*cameraDistance;///log(cameraDistance);
 		//f32 scale = cameraDistance/(1.f*log(cameraDistance));
 		//sceneMarkerNode->setSize(core::dimension2d<f32>(scale,scale));
 		sceneMarkerNode->setScale(vector3df((f32)scale));
@@ -1652,6 +1769,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 {
 	vector3d acceleration = vector3d(0,0,0);
 	vector3d prevSpeedVector;
+	prevPosition = position;
 	switch (GetIntProperty(MOTION_TYPE))
 	{
 	case MOTION_NONE:
@@ -1659,19 +1777,15 @@ void SpaceObject::UpdatePhysics(f64 time)
 		break;
 	case MOTION_NAVIGATION:
 		{
-			vector3d prevPosition;
-			if (thrustPower!=0)
-			{
-				//vector3d direction = vector3d(sin(rotation*CoeffDegreesToRadians),-cos(rotation*CoeffDegreesToRadians),0);
-				acceleration+=thrustPower*GetDirection();
-			}
+			//vector3d prevPosition;
+			acceleration+=GetFloatProperty(THRUST_POWER)*GetDirection();
 
 			//Simple Euler solving of differential equations
 			if (GetIntProperty(AFFECTED_BY_GRAVITY)!=0)
 			{
 				acceleration += physics->GetGravityAcceleration(position);
 			}
-			rotation += rotationSpeed*time;
+			SetFloatProperty(ROTATION_ANGLE,GetFloatProperty(ROTATION_ANGLE)+GetFloatProperty(ROTATION_SPEED)*time);
 			
 			prevSpeedVector = speed;
 			speed += acceleration*time;
@@ -1713,22 +1827,33 @@ void SpaceObject::UpdatePhysics(f64 time)
 				
 			}
 			//else
-			prevPosition = position;
 			position += speed*time + acceleration*time*time*.5;
-			physics->CheckCollisions(this,prevPosition);
+			physics->CheckCollisions(this);
+		}
+		break;
+	case MOTION_LINKED:
+		{
+			if (orbitingObject!=0)
+			{
+				vector3d linkRot = orbitingObject->GetDirection();
+				position=orbitingObject->position;
+				position.X+=linkPosition.X*linkRot.X-linkPosition.Y*linkRot.Y;
+				position.Y+=linkPosition.Y*linkRot.X+linkPosition.X*linkRot.Y;
+				SetFloatProperty(ROTATION_ANGLE,orbitingObject->GetFloatProperty(ROTATION_ANGLE)+GetFloatProperty(LINK_ROTATION_ANGLE));
+			}
 		}
 		break;
 	case MOTION_ORBITAL:
 		{
 			//simple circular orbiting
-			f64 Phase = orbitalEpochPhase;
-			if (orbitalPeriod!=0)
+			f64 Phase = GetFloatProperty(ORBITAL_EPOCH_PHASE);
+			if (GetFloatProperty(ORBITAL_PERIOD)!=0)
 			{
 				//Phase+=360.0*physics->globalTime/orbitalPeriod;
-				Phase+=TWO_PI*physics->globalTime/orbitalPeriod;
+				Phase+=TWO_PI*physics->globalTime/GetFloatProperty(ORBITAL_PERIOD);
 			}
-			position.X = cos(Phase)*orbitalRadius;
-			position.Y = sin(Phase)*orbitalRadius;
+			position.X = cos(Phase)*GetFloatProperty(ORBITAL_RADIUS);
+			position.Y = sin(Phase)*GetFloatProperty(ORBITAL_RADIUS);
 			position.Z = 0;
 			if (orbitingObject!=0)
 				position+=orbitingObject->position;
@@ -1737,7 +1862,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 	case MOTION_FTL:
 		{
 			vector3d position2 = position + speed*time;
-			InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2,maxFTLGravity);
+			InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2,GetFloatProperty(MAX_FTL_GRAVITY));
 			if (checkFTL->breaked)
 			{
 				position = checkFTL->breakPoint;
@@ -1762,6 +1887,53 @@ void SpaceObject::UpdatePhysics(f64 time)
 	default:
 		break;
 	}
+
+	switch(GetIntProperty(CURRENT_PROCESS))
+	{
+	case PROCESS_NONE:
+		break;
+	case PROCESS_STARGATE_OPENING:
+		{
+			//Opening in 1 second
+			f64 phase = physics->globalTime - GetFloatProperty(PROCESS_START_TIME);
+			f32 scale = (f32)(70.0*phase);
+			if (phase>1)
+			{
+				scale = 70.0;
+				SetFloatProperty(PROCESS_START_TIME,physics->globalTime);
+				SetIntProperty(CURRENT_PROCESS,PROCESS_STARGATE_WAITING);
+			}
+			if (sceneNode)
+				sceneNode->setScale(vector3df(scale));
+		}
+		break;
+	case PROCESS_STARGATE_WAITING:
+		{
+			//Opening in 1 second
+			f64 phase = physics->globalTime - GetFloatProperty(PROCESS_START_TIME);
+			if (phase>15)
+			{
+				SetFloatProperty(PROCESS_START_TIME,physics->globalTime);
+				SetIntProperty(CURRENT_PROCESS,PROCESS_STARGATE_CLOSING);
+			}
+		}
+		break;
+	case PROCESS_STARGATE_CLOSING:
+		{
+			//Closing in 1 second
+			f64 phase = physics->globalTime - GetFloatProperty(PROCESS_START_TIME);
+			f32 scale = (f32)(70.0*(1.0-phase));
+			if (phase>1)
+			{
+				scale = 0.0;
+				SetIntProperty(VISIBLE_TO_PLAYER,0);
+				SetIntProperty(CURRENT_PROCESS,PROCESS_NONE);
+			}
+			if (sceneNode)
+				sceneNode->setScale(vector3df(scale));
+		}
+		break;
+	}
 }
 
 
@@ -1772,12 +1944,12 @@ vector3d SpaceObject::GetSpeed()
 	case MOTION_ORBITAL:
 		{
 			//simple circular orbiting
-			if (orbitalPeriod!=0)
+			if (GetFloatProperty(ORBITAL_PERIOD)!=0)
 			{
-				f64 Phase = orbitalEpochPhase;
-				f64 speedValue = orbitalRadius*TWO_PI/orbitalPeriod;
+				f64 Phase = GetFloatProperty(ORBITAL_EPOCH_PHASE);
+				f64 speedValue = GetFloatProperty(ORBITAL_RADIUS)*TWO_PI/GetFloatProperty(ORBITAL_PERIOD);
 				//Phase+=360.0*physics->globalTime/orbitalPeriod;
-				Phase+=TWO_PI*physics->globalTime/orbitalPeriod;
+				Phase+=TWO_PI*physics->globalTime/GetFloatProperty(ORBITAL_PERIOD);
 				speed.X = -sin(Phase)*speedValue;
 				speed.Y = cos(Phase)*speedValue;
 				speed.Z = 0;
@@ -1789,6 +1961,12 @@ vector3d SpaceObject::GetSpeed()
 				speed = vector3d(0);
 			}
 		}
+		break;
+	case MOTION_LINKED:
+		{
+			if (orbitingObject!=0)
+				speed=orbitingObject->GetSpeed();
+		}
 
 		break;
 	default:
@@ -1797,18 +1975,55 @@ vector3d SpaceObject::GetSpeed()
 	return speed;
 }
 
+void SpaceObject::SetNode(SceneNode * node)
+{
+	sceneNode = node;
+	if (node)
+		sceneNode->setVisible(GetIntProperty(VISIBLE_TO_PLAYER)!=0);
+}
+
+void SpaceObject::SetMarkerNode(SceneNode * node, f64 size)
+{
+	sceneMarkerNode = node;
+	SetFloatProperty(MARKER_SIZE,size);
+	if (node)
+		sceneMarkerNode->setVisible(GetIntProperty(VISIBLE_TO_PLAYER)!=0);
+}
+
+void SpaceObject::SetIntProperty(IntProperty propertyNumber, s32 newValue)
+{
+	IntProperties[propertyNumber]=newValue;
+	switch(propertyNumber)
+	{
+	case VISIBLE_TO_PLAYER:
+		if (sceneNode)
+			sceneNode->setVisible(newValue!=0);
+		if (sceneMarkerNode)
+			sceneMarkerNode->setVisible(newValue!=0);
+		break;
+	default:
+		break;
+	}
+}
+
+void SpaceObject::SetFloatProperty(FloatProperty propertyNumber, f64 newValue)
+{
+	FloatProperties[propertyNumber]=newValue;
+}
+
 
 vector3d SpaceObject::GetGravityAcceleration(vector3d location)
 {
 	vector3d vectorDirection = position-location;
 	f64 distance = vectorDirection.getLength();
-	if (distance<gravityMinRadius)
+	f64 gravityRadius = GetFloatProperty(GRAVITY_MIN_RADIUS);
+	if (distance<gravityRadius)
 	{
 		//Inside object - linear from radius to gravity on surface
-		return G_CONSTANT*vectorDirection*mass/(gravityMinRadius*gravityMinRadius*gravityMinRadius);
+		return G_CONSTANT*vectorDirection*GetFloatProperty(MASS)/(gravityRadius*gravityRadius*gravityRadius);
 	}
 	//Outside object - by Newton's law
-	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance);
+	return G_CONSTANT*vectorDirection*GetFloatProperty(MASS)/(distance*distance*distance);
 }
 
 //X-gravity = G*M/R^4
@@ -1816,13 +2031,13 @@ vector3d SpaceObject::GetXGravityAcceleration(vector3d location)
 {
 	vector3d vectorDirection = position-location;
 	f64 distance = vectorDirection.getLength();
-	if (distance<gravityMinRadius)
+	if (distance<GetFloatProperty(GRAVITY_MIN_RADIUS))
 	{
 		//Inside object - very big
-		return G_CONSTANT*vectorDirection*mass;
+		return G_CONSTANT*vectorDirection*GetFloatProperty(MASS);
 	}
 	//Outside object - G*M/R*R*R*R
-	return G_CONSTANT*vectorDirection*mass/(distance*distance*distance*distance*distance);
+	return G_CONSTANT*vectorDirection*GetFloatProperty(MASS)/(distance*distance*distance*distance*distance);
 }
 
 
@@ -1892,6 +2107,12 @@ void SpaceObject::BreakFTL(f64 remainingSpeed)
 
 
 void SpaceObject::FallIntoWormhole(SpaceObject* wormhole)
+{
+	wprintf(L"DG: %ws fall into %ws\r\n",this->GetName().c_str(),wormhole->GetName().c_str());
+	return;
+}
+
+void SpaceObject::FallIntoStargate(SpaceObject* wormhole)
 {
 	wprintf(L"DG: %ws fall into %ws\r\n",this->GetName().c_str(),wormhole->GetName().c_str());
 	return;
@@ -2248,7 +2469,7 @@ InfoFTL* GamePhysics::CheckFTLBreak(vector3d start, vector3d end, f64 gravityLim
 			//if (listObjects[i]->IsEmittingGravity())
 			if (listObjects[i]->GetIntProperty(SpaceObject::EMIT_GRAVITY)!=0)
 			{
-				criticalRadiusSQ = criticalRadiusSQToMass*listObjects[i]->GetMass();
+				criticalRadiusSQ = criticalRadiusSQToMass*listObjects[i]->GetFloatProperty(SpaceObject::MASS);
 				toObject = listObjects[i]->GetPosition()-start;
 				mb2 = toObject.dotProduct(moving); //mb2 = -b/2
 				c = toObject.getLengthSQ()-criticalRadiusSQ;
@@ -2370,7 +2591,7 @@ void GamePhysics::ClearObjects()
 	AddObject(playerShip);
 }
 
-void GamePhysics::CheckCollisions(SpaceObject* object, vector3d prevPosition)
+void GamePhysics::CheckCollisions(SpaceObject* object)
 {
 	u32 i;
 	f64 minDistance;
@@ -2382,7 +2603,7 @@ void GamePhysics::CheckCollisions(SpaceObject* object, vector3d prevPosition)
 		if (listObjects[i]==object)
 			continue;//Skip same object
 		//distance = (object->GetPosition()-listObjects[i]->GetPosition()).getLengthSQ();
-		minDistance = (object->GetRaduis()-listObjects[i]->GetRaduis());
+		minDistance = (object->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS)-listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS));
 		minDistance*=minDistance;
 		if ((object->GetPosition()-listObjects[i]->GetPosition()).getLengthSQ() < minDistance)
 		{
@@ -2391,7 +2612,7 @@ void GamePhysics::CheckCollisions(SpaceObject* object, vector3d prevPosition)
 			{
 				//f64 projectedDistance;
 				vector3d curVector = object->GetPosition()-listObjects[i]->GetPosition();
-				vector3d prevVector = prevPosition-listObjects[i]->GetPosition();
+				vector3d prevVector = object->GetPrevPosition()-listObjects[i]->GetPrevPosition();
 				vector3d wormholeDirection = listObjects[i]->GetDirection();
 				vector3d wormholeNormale;
 				wormholeNormale.X = wormholeDirection.Y;
@@ -2402,6 +2623,35 @@ void GamePhysics::CheckCollisions(SpaceObject* object, vector3d prevPosition)
 					object->FallIntoWormhole(listObjects[i]);
 					return;//no more collisions expected
 				}
+				continue;
+			}
+			if (listObjects[i]->GetIntProperty(SpaceObject::STARGATE)!=0)
+			{
+				if (listObjects[i]->GetIntProperty(SpaceObject::STARGATE)!=2)
+					continue; //skip stargate body, proceede with event horizon only
+
+				if (listObjects[i]->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_STARGATE_WAITING)
+					continue; //skip closed/opening/closing wormholes
+
+				vector3d curVector = object->GetPosition()-listObjects[i]->GetPosition();
+				vector3d prevVector = object->GetPrevPosition()-listObjects[i]->GetPrevPosition();
+				vector3d stargateNormale = listObjects[i]->GetDirection();
+				
+				if (curVector.dotProduct(stargateNormale)*prevVector.dotProduct(stargateNormale)<0)
+				{
+					if (listObjects[i]->GetIntProperty(SpaceObject::TRAVEL_TO_X)<-65536)
+					{//bounce to event horizon of output stargate
+						wprintf(L"DG: %ws bounce on event horizon of output stargate\r\n",object->GetName().c_str());
+						
+						f64 perpendicularSpeed = stargateNormale.dotProduct(object->GetSpeed()-listObjects[i]->GetSpeed());
+						object->SetPosition(object->GetPrevPosition() + listObjects[i]->GetPosition()-listObjects[i]->GetPrevPosition()); //return object to prev position and shift for vector of movement of listObjects[i]
+						object->SetSpeed(object->GetSpeed()-2.0*perpendicularSpeed*stargateNormale);
+						continue; //no more collisions expected
+					}
+					object->FallIntoStargate(listObjects[i]);
+					return;//no more collisions expected
+				}
+
 				continue;
 			}
 			wprintf(L"DG: collision %ws with %ws\r\n",object->GetName().c_str(),listObjects[i]->GetName().c_str());
@@ -2416,13 +2666,26 @@ SpaceObject* GamePhysics::GetWormholeTo(vector2ds galaxyQuadrant)
 	u32 i;
 	for (i=0;i<listObjects.size();i++)
 		if (listObjects[i]->GetIntProperty(SpaceObject::WORMHOLE)!=0)
-			if (listObjects[i]->GetIntProperty(SpaceObject::WORMHOLE_TO_X)==galaxyQuadrant.X)
-				if (listObjects[i]->GetIntProperty(SpaceObject::WORMHOLE_TO_Y)==galaxyQuadrant.Y)
+			if (listObjects[i]->GetIntProperty(SpaceObject::TRAVEL_TO_X)==galaxyQuadrant.X)
+				if (listObjects[i]->GetIntProperty(SpaceObject::TRAVEL_TO_Y)==galaxyQuadrant.Y)
 				{
 					return listObjects[i];
 				}
 	return 0;//No such wormhole
 }
+
+//Find first object with specific value of property
+SpaceObject* GamePhysics::GetFirstObject(SpaceObject::IntProperty prop, s32 value)
+{
+	u32 i;
+	for (i=0;i<listObjects.size();i++)
+		if (listObjects[i]->GetIntProperty(prop)==value)
+			{
+				return listObjects[i];
+			}
+	return 0;//No such object
+}
+
 
 void GamePhysics::DebugJumpToWormhole(u32 param)
 {
@@ -2505,6 +2768,80 @@ void GamePhysics::DebugJumpToWormhole(u32 param)
 	//playerShip->SetSpeed(vector3d(100.0,-100.0,0));
 }
 
+void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
+{
+	u32 stargatePresence;
+	SpaceObject* destGate;
+	vector2ds coordinates;
+	coordinates = gameRoot->GetGalaxy()->StargateAddress2Coordinates(address);
+
+	destGate = GetFirstObject(SpaceObject::STARGATE,2);
+	if ((sender->GetPosition()-destGate->GetPosition()).getLengthSQ()>1e8)
+	{
+		wprintf(L" ** Nothing happens\r\n");
+		return;
+	}
+
+	if (destGate->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_NONE)
+	{
+		wprintf(L" ** Stargate instantly respond that they are busy\r\n");
+		return;
+	}
+
+	if (galaxyQuadrant == coordinates)
+	{
+		wprintf(L" ** Stargate instantly respond that it is their address\r\n");
+		return;
+	}
+
+	if (coordinates.X<-65536)
+	{
+		if (coordinates.Y==1)
+			wprintf(L" ** After a small pause stargate respond that address is incorrect\r\n");
+		else
+			wprintf(L" ** Stargate instantly respond that address is incorrect\r\n");
+		return;
+	}
+
+	wprintf(L" ** ** Stargate activating to (%i,%i)...\r\n",coordinates.X,coordinates.Y);
+	stargatePresence = gameRoot->GetGalaxy()->CheckStargatePresence(coordinates,true);
+	if (stargatePresence==0)
+	{
+		wprintf(L" ** Stargate activated, but not opened. A bit later came response was that address is incorrect\r\n");
+		return;
+	}
+	if (stargatePresence==2)
+	{
+		wprintf(L" ** Stargate activated, but not opened. After a second came strange response. You cannot decode it\r\n");
+		return;
+	}
+
+	wprintf(L" ** Stargate activated and opened\r\n");
+
+	destGate->SetIntProperty(SpaceObject::VISIBLE_TO_PLAYER,1);
+	destGate->SetIntProperty(SpaceObject::CURRENT_PROCESS,SpaceObject::PROCESS_STARGATE_OPENING);
+	destGate->SetIntProperty(SpaceObject::TRAVEL_TO_X,coordinates.X);
+	destGate->SetIntProperty(SpaceObject::TRAVEL_TO_Y,coordinates.Y);
+	destGate->SetFloatProperty(SpaceObject::PROCESS_START_TIME,globalTime);
+
+	return;
+}
+
+void GamePhysics::GetObjectsAtDistance(core::array<SpaceObject*>* list, vector3d location, f64 distance)
+{
+	f64 distSQ = distance*distance;
+	list->clear();
+	u32 i;
+	for (i=0;i<listObjects.size();i++)
+	{
+		if ((location-listObjects[i]->GetPosition()).getLengthSQ()<distSQ)
+		{
+			list->push_back(listObjects[i]);
+		}
+	}
+}
+
+
 //#########################################################################
 //ResourceManager
 
@@ -2515,6 +2852,13 @@ void ResourceManager::Setup(IrrlichtDevice* newDevice, scene::ISceneManager* new
 	physics = newPhysics;
 	sceneManager = newSceneManager;
 	videoDriver = newVideoDriver;
+
+	newDevice->getGUIEnvironment()->clear();
+
+	simpleTextToDisplay = newDevice->getGUIEnvironment()->addStaticText(
+		L"Diagnostic very-very-very-very-very-very-very-very-long\r\nSecond line", core::rect<s32>(5, 5, 400, 200));
+	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 255, 0));
+
 }
 
 void ResourceManager::MakeBackground()
@@ -2614,8 +2958,8 @@ SpaceObject* ResourceManager::MakeStar(f64 radius, s32 polygons)
 	newStar->SetNode(sceneNode);
 	//newStar->SetMotionType(SpaceObject::MOTION_NONE);
 	newStar->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NONE);
-	newStar->SetMassRadius(radius);
-	newStar->SetRadius(radius);
+	newStar->SetFloatProperty(SpaceObject::GRAVITY_MIN_RADIUS,radius);
+	newStar->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);
 	//planetOne->SetOrbitalParams(0,200,300,0);
 	physics->AddObject(newStar);
 
@@ -2698,8 +3042,8 @@ SpaceObject* ResourceManager::MakePlanet(f64 radius, s32 polygons)
 		//node2->setMaterialFlag(video::EMF_NORMALIZE_NORMALS,true);
 	}
 	newPlanet->SetNode(sceneNode);
-	newPlanet->SetMassRadius(radius);
-	newPlanet->SetRadius(radius);
+	newPlanet->SetFloatProperty(SpaceObject::GRAVITY_MIN_RADIUS,radius);
+	newPlanet->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);
 	//planetOne->SetMotionType(SpaceObject::MOTION_NONE);
 	//newPlanet->SetOrbitalParams(0,200,300,0);
 
@@ -2731,8 +3075,8 @@ SpaceObject* ResourceManager::MakeWormhole()
 	sceneNode->setScale(vector3df(50.0f));
 	newWormhole->SetNode(sceneNode);
 
-	newWormhole->SetMass(0);
-	newWormhole->SetRadius(50.0*0.7);//Distance to check passing thru circle
+	newWormhole->SetFloatProperty(SpaceObject::MASS,0);
+	newWormhole->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,50.0*0.7);//Distance to check passing thru circle
 	newWormhole->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 	newWormhole->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
 	newWormhole->SetIntProperty(SpaceObject::WORMHOLE,1);
@@ -2741,6 +3085,54 @@ SpaceObject* ResourceManager::MakeWormhole()
 	AddMarker(newWormhole,0);
 
 	return newWormhole;
+}
+
+
+SpaceObject* ResourceManager::MakeStargate()
+{
+	SpaceObject* newStargate = new SpaceObject();//delete is in GamePhysics::ClearObjects
+	SceneNode * sceneNode;
+	SpaceObject* newStargateEH = new SpaceObject();//delete is in GamePhysics::ClearObjects
+	SceneNode * sceneNodeEH;
+
+	sceneNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/sg1.irrmesh"));
+
+	sceneNode->setScale(vector3df(50.0f));
+	newStargate->SetNode(sceneNode);
+
+	newStargate->SetFloatProperty(SpaceObject::MASS,0);
+	newStargate->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,50.0*0.7);
+	newStargate->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+	newStargate->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+	newStargate->SetIntProperty(SpaceObject::STARGATE,1);
+
+	physics->AddObject(newStargate);
+	AddMarker(newStargate,0);
+
+
+	sceneNodeEH = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/sg1eh.irrmesh"));
+	sceneNodeEH->setScale(vector3df(70.0f));
+	newStargateEH->SetNode(sceneNodeEH);
+
+	newStargateEH->SetFloatProperty(SpaceObject::MASS,0);
+	newStargateEH->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,70.0);
+	newStargateEH->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+	newStargateEH->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+	newStargateEH->SetIntProperty(SpaceObject::TRAVEL_TO_X,-100000);//not working
+	newStargateEH->SetIntProperty(SpaceObject::TRAVEL_TO_Y,0);
+	newStargateEH->SetIntProperty(SpaceObject::STARGATE,2);//TODO: ????
+
+	//newStargateEH->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_LINKED);
+	//newStargateEH->SetLinkedPosition(vector3d(0,13.0,0));
+	//newStargateEH->SetOrbitalParent(newStargate);
+	newStargateEH->SetLinkedParams(newStargate,vector3d(13.0,0,0),0);
+	newStargateEH->SetName(L"stargate event horizon");
+	newStargateEH->SetIntProperty(SpaceObject::VISIBLE_TO_PLAYER,0);
+
+	physics->AddObject(newStargateEH);
+	//AddMarker(newStargateEH,0);
+
+	return newStargate;
 }
 
 
@@ -2763,7 +3155,7 @@ SpaceObject* ResourceManager::MakeShip()
 	ship->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 	ship->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,1);
 
-	ship->SetRadius(1.0);
+	ship->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,1.0);
 	physics->AddObject(ship);
 
 	LoadNodesForShip(ship);
@@ -2831,6 +3223,14 @@ void GameView::DisplayMessage(text_string message)
 //#########################################################################
 //RealSpaceView
 
+RealSpaceView::RealSpaceView()
+{
+	typing = 0;
+	typingText = L"";
+	typingTextPrev = L"";
+	//typingTextPrev = L"31496011763";//DEBUG!
+}
+
 void RealSpaceView::Init()
 {
 	/*
@@ -2862,7 +3262,6 @@ void RealSpaceView::Init()
 	resourceManager->SetSceneManager(sceneManager);
 	
 	sceneManager->clear();
-	device->getGUIEnvironment()->clear();
 	
 	// create a particle system
 
@@ -2975,9 +3374,7 @@ void RealSpaceView::Init()
 		driver->getTexture(RESOURCE_PATH"/ships.png"),//irrlichtlogoalpha2.tga"),
 		core::position2d<s32>(10,20));*/
 
-	simpleTextToDisplay = device->getGUIEnvironment()->addStaticText(
-		L"Diagnostic very-very-very-very-very-very-very-very-long\r\nSecond line", core::rect<s32>(5, 5, 400, 200));
-	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 255, 0));
+	simpleTextToDisplay = resourceManager->getSimpleText();
 	/**/
 
 	// This is the movemen speed in units per second.
@@ -2997,177 +3394,251 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	vector3df nodePosition;// = node->getPosition();
 	s32 quasiDir;
 
-	if(eventReceiver->IsKeyDown(irr::KEY_KEY_W))
-		//playerShip->speed.Y += MOVEMENT_SPEED * frameDeltaTime;
-		playerShip->SetControl(playerShip->GetControlThrust(),SpaceObject::CONTROL_THRUST_RELATIVE);
-	else if(eventReceiver->IsKeyDown(irr::KEY_KEY_S))
-		//playerShip->speed.Y -= MOVEMENT_SPEED * frameDeltaTime;
-		playerShip->SetControl(-playerShip->GetControlThrust(),SpaceObject::CONTROL_THRUST_RELATIVE);
-	else
-		playerShip->SetControl(0.0,SpaceObject::CONTROL_THRUST_ABSOLUTE);
-
-	if(eventReceiver->IsKeyDown(irr::KEY_KEY_A))
-		//rotate = MOVEMENT_SPEED*30.f;
-		playerShip->SetControl(1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
-		//playerShip->speed.X -= MOVEMENT_SPEED * frameDeltaTime;
-	else if(eventReceiver->IsKeyDown(irr::KEY_KEY_D))
-		playerShip->SetControl(-1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
-		//rotate = -MOVEMENT_SPEED*30.f;
-		//playerShip->speed.X += MOVEMENT_SPEED * frameDeltaTime;
-	else
-		playerShip->SetControl(0,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
-
-	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_1))
-		playerShip->SetControlThrust(1.0); //playerThrust = 1.0;
-	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_2))
-		playerShip->SetControlThrust(0.1); //playerThrust = 0.1;
-	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_3))
-		playerShip->SetControlThrust(0.01); //playerThrust = 0.01;
-	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_4))
-		playerShip->SetControlThrust(0.001); //playerThrust = 0.001;
-	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_5))
-		playerShip->SetControlThrust(0.0001); //playerThrust = 0.0001;
-	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_6))
-		playerShip->SetControlThrust(0.00001); //playerThrust = 0.00001;
-
-	if(eventReceiver->IsKeyPressed(irr::KEY_F1))
-		gamePhysics->SetTimeSpeed(1.0);
-	if(eventReceiver->IsKeyPressed(irr::KEY_F2))
-		gamePhysics->SetTimeSpeed(10.0);
-	if(eventReceiver->IsKeyPressed(irr::KEY_F3))
-		gamePhysics->SetTimeSpeed(100.0);
-	if(eventReceiver->IsKeyPressed(irr::KEY_F4))
-		gamePhysics->SetTimeSpeed(1000.0);
-	if(eventReceiver->IsKeyPressed(irr::KEY_F5))
-		gamePhysics->SetTimeSpeed(10000.0);
-	if(eventReceiver->IsKeyPressed(irr::KEY_F6))
-		gamePhysics->SetTimeSpeed(100000.0);
-
-	if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
-		playerShip->AutopilotBreak();
-	if (eventReceiver->IsKeyDown(irr::KEY_KEY_O))
-		playerShip->AutopilotOrbiting();
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_K))
-		gameRoot->SaveGame();
-	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_L))
-		gameRoot->LoadGame();
-
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
+	if (typing==0)
 	{
-		//Dump galaxy coordinates, in light-years
-		//10 digits after point roughly gives game units, as light-year is roughly 10^10 * 1000 km
-		vector3d xgrav = gamePhysics->GetXGravityAcceleration(playerShip->GetPosition());
-		text_string message=L"Player galaxy coordinates: ";
-		message+=print_f64(playerShip->GetGalaxyCoordinates().X,L"%.010f");
-		message+=L", ";
-		message+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
-		DisplayMessage(message);
-		message = L"Player coordinates in system: ";
-		message+=print_f64(playerShip->GetPosition().X,L"%.010f");
-		message+=L", ";
-		message+=print_f64(playerShip->GetPosition().Y,L"%.010f");
-		DisplayMessage(message);
-		message = L"X-gravity: ";
-		message+=print_f64(log(xgrav.getLength()),L"%.03f");
-		DisplayMessage(message);
-	}
-		
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_TAB))
-	{
-		//gameRoot->ActivateMap();
-		gameRoot->AcviateView(DG_Game::VIEW_SECTOR_MAP);
-		return; //skip update physics
-	}
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
-	{
-		if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetMaxFTLGravity()))
-		{
-			playerShip->JumpToFTL(3000.0);
-			DisplayMessage(L"Jump to FTL");
-			//gameRoot->ActivateFTL();
-			gameRoot->SwitchView(DG_Game::VIEW_FTL);
-
-		}
+		if(eventReceiver->IsKeyDown(irr::KEY_KEY_W))
+			//playerShip->speed.Y += MOVEMENT_SPEED * frameDeltaTime;
+			playerShip->SetControl(playerShip->GetControlThrust(),SpaceObject::CONTROL_THRUST_RELATIVE);
+		else if(eventReceiver->IsKeyDown(irr::KEY_KEY_S))
+			//playerShip->speed.Y -= MOVEMENT_SPEED * frameDeltaTime;
+			playerShip->SetControl(-playerShip->GetControlThrust(),SpaceObject::CONTROL_THRUST_RELATIVE);
 		else
+			playerShip->SetControl(0.0,SpaceObject::CONTROL_THRUST_ABSOLUTE);
+
+		if(eventReceiver->IsKeyDown(irr::KEY_KEY_A))
+			//rotate = MOVEMENT_SPEED*30.f;
+			playerShip->SetControl(1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
+			//playerShip->speed.X -= MOVEMENT_SPEED * frameDeltaTime;
+		else if(eventReceiver->IsKeyDown(irr::KEY_KEY_D))
+			playerShip->SetControl(-1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
+			//rotate = -MOVEMENT_SPEED*30.f;
+			//playerShip->speed.X += MOVEMENT_SPEED * frameDeltaTime;
+		else
+			playerShip->SetControl(0,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
+
+		if(eventReceiver->IsKeyPressed(irr::KEY_KEY_1))
+			playerShip->SetControlThrust(1.0); //playerThrust = 1.0;
+		if(eventReceiver->IsKeyPressed(irr::KEY_KEY_2))
+			playerShip->SetControlThrust(0.1); //playerThrust = 0.1;
+		if(eventReceiver->IsKeyPressed(irr::KEY_KEY_3))
+			playerShip->SetControlThrust(0.01); //playerThrust = 0.01;
+		if(eventReceiver->IsKeyPressed(irr::KEY_KEY_4))
+			playerShip->SetControlThrust(0.001); //playerThrust = 0.001;
+		if(eventReceiver->IsKeyPressed(irr::KEY_KEY_5))
+			playerShip->SetControlThrust(0.0001); //playerThrust = 0.0001;
+		if(eventReceiver->IsKeyPressed(irr::KEY_KEY_6))
+			playerShip->SetControlThrust(0.00001); //playerThrust = 0.00001;
+
+		if(eventReceiver->IsKeyPressed(irr::KEY_F1))
+			gamePhysics->SetTimeSpeed(1.0);
+		if(eventReceiver->IsKeyPressed(irr::KEY_F2))
+			gamePhysics->SetTimeSpeed(10.0);
+		if(eventReceiver->IsKeyPressed(irr::KEY_F3))
+			gamePhysics->SetTimeSpeed(100.0);
+		if(eventReceiver->IsKeyPressed(irr::KEY_F4))
+			gamePhysics->SetTimeSpeed(1000.0);
+		if(eventReceiver->IsKeyPressed(irr::KEY_F5))
+			gamePhysics->SetTimeSpeed(10000.0);
+		if(eventReceiver->IsKeyPressed(irr::KEY_F6))
+			gamePhysics->SetTimeSpeed(100000.0);
+
+		if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
+			playerShip->AutopilotBreak();
+		if (eventReceiver->IsKeyDown(irr::KEY_KEY_O))
+			playerShip->AutopilotOrbiting();
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_K))
+			gameRoot->SaveGame();
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_L))
+			gameRoot->LoadGame();
+
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
 		{
-			DisplayMessage(L"Gravity is too high to jump to FTL");
+			//Dump galaxy coordinates, in light-years
+			//10 digits after point roughly gives game units, as light-year is roughly 10^10 * 1000 km
+			vector3d xgrav = gamePhysics->GetXGravityAcceleration(playerShip->GetPosition());
+			text_string message=L"Player galaxy coordinates: ";
+			message+=print_f64(playerShip->GetGalaxyCoordinates().X,L"%.010f");
+			message+=L", ";
+			message+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
+			DisplayMessage(message);
+			message = L"Player coordinates in system: ";
+			message+=print_f64(playerShip->GetPosition().X,L"%.010f");
+			message+=L", ";
+			message+=print_f64(playerShip->GetPosition().Y,L"%.010f");
+			DisplayMessage(message);
+			message = L"X-gravity: ";
+			message+=print_f64(log(xgrav.getLength()),L"%.03f");
+			DisplayMessage(message);
 		}
-	}
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_MULTIPLY))
-	{
-		quasiDir = 0;
-		goto JumpToQuasi;
-	}
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_MINUS) || eventReceiver->IsKeyPressed(irr::KEY_SUBTRACT))
-	{
-		quasiDir = -1;
-		goto JumpToQuasi;
-	}
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_PLUS) || eventReceiver->IsKeyPressed(irr::KEY_ADD))
-	{
-		quasiDir = 1;
-JumpToQuasi:
-		if (gameRoot->GetGalaxy()->IsInGrid(playerShip->GetGalaxyQuadrant())!=1)
-		{//outside galaxy grid
-			DisplayMessage(L"PlusMinus Engine does not actived");
-		}
-		else if (gamePhysics->IsPlusMinusPossible(playerShip->GetPosition()))
+			
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_B))
 		{
-			playerShip->JumpToQuasiSpace(quasiDir);
-			if (quasiDir==1)
+			gameRoot->GetGalaxy()->DebugShowWormholes();
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_TAB))
+		{
+			//gameRoot->ActivateMap();
+			gameRoot->AcviateView(DG_Game::VIEW_SECTOR_MAP);
+			return; //skip update physics
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
+		{
+			if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetFloatProperty(SpaceObject::MAX_FTL_GRAVITY)))
 			{
-				DisplayMessage(L"PlusMinus Engine activated by Plus");
-			}
-			else if (quasiDir==-1)
-			{
-				DisplayMessage(L"PlusMinus Engine activated by Minus");
+				playerShip->JumpToFTL(3000.0);
+				DisplayMessage(L"Jump to FTL");
+				//gameRoot->ActivateFTL();
+				gameRoot->SwitchView(DG_Game::VIEW_FTL);
+
 			}
 			else
 			{
-				//N/A
-				DisplayMessage(L"PlusMinus Engine activated by Plus and Minus at once");
+				DisplayMessage(L"Gravity is too high to jump to FTL");
+			}
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_MULTIPLY))
+		{
+			quasiDir = 0;
+			goto JumpToQuasi;
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_MINUS) || eventReceiver->IsKeyPressed(irr::KEY_SUBTRACT))
+		{
+			quasiDir = -1;
+			goto JumpToQuasi;
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_PLUS) || eventReceiver->IsKeyPressed(irr::KEY_ADD))
+		{
+			quasiDir = 1;
+	JumpToQuasi:
+			if (gameRoot->GetGalaxy()->IsInGrid(playerShip->GetGalaxyQuadrant())!=1)
+			{//outside galaxy grid
+				DisplayMessage(L"PlusMinus Engine does not actived");
+			}
+			else if (gamePhysics->IsPlusMinusPossible(playerShip->GetPosition()))
+			{
+				playerShip->JumpToQuasiSpace(quasiDir);
+				if (quasiDir==1)
+				{
+					DisplayMessage(L"PlusMinus Engine activated by Plus");
+				}
+				else if (quasiDir==-1)
+				{
+					DisplayMessage(L"PlusMinus Engine activated by Minus");
+				}
+				else
+				{
+					//N/A
+					DisplayMessage(L"PlusMinus Engine activated by Plus and Minus at once");
+				}
+
+				gamePhysics->GoInterstellar();
+				gameRoot->GoInterstellar();
+
+				gameRoot->SwitchView(DG_Game::VIEW_QUASISPACE);
+			}
+			else
+			{
+				DisplayMessage(L"Gravity is too high to use PlusMinus Engine");
+			}
+		}
+
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_J))
+		{
+			/*
+			GalaxyStarSystem* jumpTo;
+			jumpTo = gameRoot->GetGalaxy()->DebugJump();
+			if (jumpTo)
+			{
+				vector3d tempPos = playerShip->GetPosition();
+				gameRoot->GoStarSystem(jumpTo);
+				playerShip->SetPosition(tempPos);
+				
+				playerShip->UpdateGalaxyCoordinates();
+				gameRoot->GetGalaxy()->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
+				jumpTo->unlock(0);//free if not stored somewhere else
+			}
+			*/
+			gamePhysics->DebugJumpToWormhole(1);
+
+		}
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_H))
+			gamePhysics->DebugJumpToWormhole(0);
+
+		if(eventReceiver->IsKeyDown(irr::KEY_UP))
+			if (cameraDistanceDegree<6500)
+			{
+				cameraDistanceDegree+=frameDeltaTime*2000.0;
+				//cameraDistance *= 1.f*(1.f+frameDeltaTime);
+				UpdateCameraDistance();
 			}
 
-			gamePhysics->GoInterstellar();
-			gameRoot->GoInterstellar();
-
-			gameRoot->SwitchView(DG_Game::VIEW_QUASISPACE);
-		}
-		else
+		if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
+			if (cameraDistanceDegree>-100)
+			{
+				//cameraDistance *= 1.f*(1.f-frameDeltaTime);
+				cameraDistanceDegree-=frameDeltaTime*2000.0;
+				UpdateCameraDistance();
+			}
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_T))
 		{
-			DisplayMessage(L"Gravity is too high to use PlusMinus Engine");
+			playerShip->ScanSpace();
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_Y))
+		{
+			typing = 1;//type stargate address
+			typingText = L"";
 		}
 	}
-
-
-	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_J))
+	else
 	{
-		/*
-		GalaxyStarSystem* jumpTo;
-		jumpTo = gameRoot->GetGalaxy()->DebugJump();
-		if (jumpTo)
+		if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
+			typing = 0;
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_0))
+			typingText += L"0";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_1))
+			typingText += L"1";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_2))
+			typingText += L"2";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_3))
+			typingText += L"3";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_4))
+			typingText += L"4";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_5))
+			typingText += L"5";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_6))
+			typingText += L"6";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_7))
+			typingText += L"7";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_8))
+			typingText += L"8";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_9))
+			typingText += L"9";
+		if (eventReceiver->IsKeyPressed(irr::KEY_UP))
+			typingText = typingTextPrev;
+		if (eventReceiver->IsKeyPressed(irr::KEY_BACK))
+			typingText = typingText.subString(0,typingText.size()-1);
+		if (eventReceiver->IsKeyPressed(irr::KEY_RETURN))
 		{
-			vector3d tempPos = playerShip->GetPosition();
-			gameRoot->GoStarSystem(jumpTo);
-			playerShip->SetPosition(tempPos);
-			
-			playerShip->UpdateGalaxyCoordinates();
-			gameRoot->GetGalaxy()->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
-			jumpTo->unlock(0);//free if not stored somewhere else
+			typingTextPrev = typingText;
+			if (typing==1)
+			{
+				u64 address = _wtoi64(typingText.c_str());
+				wprintf(L" * Typed stargate address: %I64i\r\n",address);
+				//playerShip->FallIntoStargate(address);
+				gamePhysics->SendStargateAddress(playerShip,address);
+			}
+			typing=0;
 		}
-		*/
-		gamePhysics->DebugJumpToWormhole(1);
-
 	}
-	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_H))
-		gamePhysics->DebugJumpToWormhole(0);
 
 	/*
 	if (eventReceiver->IsKeyDown(irr::KEY_KEY_Q))
@@ -3184,7 +3655,7 @@ JumpToQuasi:
 
 	
 	
-	f64 thrust = playerShip->GetThrust();
+	f64 thrust = playerShip->GetFloatProperty(SpaceObject::THRUST_POWER);
 	if (thrust!=0)
 	{
 		f32 thrustScale;
@@ -3211,41 +3682,36 @@ JumpToQuasi:
 		//playerThrustParticles->setEmitter(0);
 	}
 
-	if(eventReceiver->IsKeyDown(irr::KEY_UP))
-		if (cameraDistanceDegree<6500)
-		{
-			cameraDistanceDegree+=frameDeltaTime*2000.0;
-			//cameraDistance *= 1.f*(1.f+frameDeltaTime);
-			UpdateCameraDistance();
-		}
 
-	if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
-		if (cameraDistanceDegree>-100)
-		{
-			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
-			cameraDistanceDegree-=frameDeltaTime*2000.0;
-			UpdateCameraDistance();
-		}
+	if (typing==0)
+	{
+		text_string debug_text(L"Speed: ");
+		f64 playerSpeed;
+		GravityInfo* gravInfo;
+		gravInfo = gamePhysics->GetGravityInfo(playerShip->GetPosition());
+		gravInfo->UpdateGravityInfoOrbit(playerShip);
 
-	text_string debug_text(L"Speed: ");
-	f64 playerSpeed;
-	GravityInfo* gravInfo;
-	gravInfo = gamePhysics->GetGravityInfo(playerShip->GetPosition());
-	gravInfo->UpdateGravityInfoOrbit(playerShip);
-
-	playerSpeed = playerShip->GetSpeed().getLength();
-	debug_text += playerSpeed;
-	debug_text += L" km/s\r\n";
-	debug_text += (playerSpeed/LIGHTSPEED);
-	debug_text += L" c; ";
-	debug_text += L"\r\n";
-	debug_text += gravInfo->print();
-	simpleTextToDisplay->setText(debug_text.c_str());
+		playerSpeed = playerShip->GetSpeed().getLength();
+		debug_text += playerSpeed;
+		debug_text += L" km/s\r\n";
+		debug_text += (playerSpeed/LIGHTSPEED);
+		debug_text += L" c; ";
+		debug_text += L"\r\n";
+		debug_text += gravInfo->print();
+		simpleTextToDisplay->setText(debug_text.c_str());
+	
+		delete gravInfo;//new in GamePhysics::GetGravityInfo
+	}
+	else
+	{
+		text_string debug_text(L"Typing: ");
+		debug_text += typingText;
+		simpleTextToDisplay->setText(debug_text.c_str());
+	}
 
 	gamePhysics->Update(frameDeltaTime);
 	gamePhysics->UpdateNodes(playerShip);
 
-	delete gravInfo;//new in GamePhysics::GetGravityInfo
 
 	//TODO: use resourceManager to render?
 	videoDriver->beginScene(true, true, video::SColor(255,0,0,0));
@@ -3362,7 +3828,7 @@ void MapSpaceView::AddObject(SpaceObject* spaceObject)
 	MapObject* newMapObject = new MapObject();//delete in MapSpaveView::ClearObjects
 	newMapObject->SetNode(sceneNode2);
 	newMapObject->SetOriginal(spaceObject);
-	newMapObject->SetSizes(2.0*spaceObject->GetRaduis(),1.0);
+	newMapObject->SetSizes(2.0*spaceObject->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS),1.0);
 	MapObjectList.push_back(newMapObject);
 }
 
@@ -3491,6 +3957,7 @@ void MapSpaceView::Init()
 	device = resourceManager->GetDevice();
 	eventReceiver = resourceManager->GetEventReceiver();
 	centerOfMap = vector2d(0);
+	simpleTextToDisplay = resourceManager->getSimpleText();
 }
 
 void MapSpaceView::Activate()
@@ -3600,6 +4067,99 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 			UpdateCameraDistance();
 
 		}
+	if (eventReceiver->IsKeyPressed(irr::KEY_NEXT))
+	{
+		if (cameraDistanceDegree>10000)
+		{
+			cameraDistanceDegree = 10000;
+		}
+		else if (cameraDistanceDegree>8500)
+		{
+			cameraDistanceDegree = 8500;
+		}
+		else if (cameraDistanceDegree>7000)
+		{
+			cameraDistanceDegree = 7000;
+		}
+		else if (cameraDistanceDegree>5500)
+		{
+			cameraDistanceDegree = 5500;
+		}
+		else if (cameraDistanceDegree>4000)
+		{
+			cameraDistanceDegree = 4000;
+		}
+		else if (cameraDistanceDegree>2500)
+		{
+			cameraDistanceDegree = 2500;
+		}
+		else if (cameraDistanceDegree>850)
+		{
+			cameraDistanceDegree = 850;
+		}
+		UpdateCameraDistance();
+	}
+	if (eventReceiver->IsKeyPressed(irr::KEY_PRIOR))
+	{
+		if (cameraDistanceDegree<850)
+		{
+			cameraDistanceDegree = 850;
+		}
+		else if (cameraDistanceDegree<2500)
+		{
+			cameraDistanceDegree = 2500;
+		}
+		else if (cameraDistanceDegree<4000)
+		{
+			cameraDistanceDegree = 4000;
+		}
+		else if (cameraDistanceDegree<5500)
+		{
+			cameraDistanceDegree = 5500;
+		}
+		else if (cameraDistanceDegree<7000)
+		{
+			cameraDistanceDegree = 7000;
+		}
+		else if (cameraDistanceDegree<8500)
+		{
+			cameraDistanceDegree = 8500;
+		}
+		else if (cameraDistanceDegree<10000)
+		{
+			cameraDistanceDegree = 10000;
+		}
+		else if (cameraDistanceDegree<11500)
+		{
+			cameraDistanceDegree = 11500;
+		}
+		UpdateCameraDistance();
+	}
+
+	text_string debug_text(L"Map scale: ");
+	debug_text += cameraDistanceDegree;
+	debug_text += L"\r\nGrid size: ";
+	//debug_text += gridCellSize;
+	if (gridCellSize>=0)
+	{
+		debug_text += L"1";
+		for (s32 i=0;i<(s32)gridCellSize;i++)
+		{
+			debug_text += L"0";
+		}
+	}
+	else
+	{
+		debug_text += L"0.";
+		for (s32 i=(s32)gridCellSize;i<-1;i++)
+		{
+			debug_text += L"0";
+		}
+		debug_text += L"1";
+	}
+	debug_text += L" l.y.";
+	simpleTextToDisplay->setText(debug_text.c_str());
+
 
 	//TODO: use resourceManager to render?
 	//videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
@@ -3640,11 +4200,13 @@ void MapSpaceView::UpdateCameraDistance()
 
 	//convert map scale into grid scale (optimized version)
 	gridScale = cameraDistanceDegree+220.523766502312287933;//add shift
-	gridScale -= floor(gridScale*0.001302883445709755482953)*767.52836433134856133933;//round degree to ln(10)/0.003
+	gridCellSize = floor(gridScale*0.001302883445709755482953);
+	gridScale -= gridCellSize*767.52836433134856133933;//round degree to ln(10)/0.003
 	gridScale = 1100.0*exp(gridScale*-0.003);//result will be in range (110,1100)
+	gridCellSize -= 11;//now 0 means that grid size is 1 l.y.
 
 
-	if (cameraDistanceDegree>8000)
+	if (gridCellSize>=0)
 	{
 		//grid cell is l.y or larger - shift grid to galaxy center
 		gridShift = -(centerOfMap+shiftToGalaxy)*mapScale;
@@ -3723,7 +4285,7 @@ void FTLView::Activate()
 {
 	playerShip = gameRoot->GetPlayerShip();
 
-	playerShipNode->setRotation(vector3df(0,0,(f32)(playerShip->GetRotation()*RADTODEG64)));
+	playerShipNode->setRotation(vector3df(0,0,(f32)(playerShip->GetFloatProperty(SpaceObject::ROTATION_ANGLE)*RADTODEG64)));
 	//sceneManager->addSceneNode(
 }
 
@@ -3818,7 +4380,7 @@ void QuasiSpaceView::Activate()
 {
 	playerShip = gameRoot->GetPlayerShip();
 
-	playerShipNode->setRotation(vector3df(0,0,(f32)(playerShip->GetRotation()*RADTODEG64)));
+	playerShipNode->setRotation(vector3df(0,0,(f32)(playerShip->GetFloatProperty(SpaceObject::ROTATION_ANGLE)*RADTODEG64)));
 	//sceneManager->addSceneNode(
 }
 
@@ -3912,7 +4474,6 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	driver = device->getVideoDriver();
 	smgr = device->getSceneManager();
-	gameMode  = 0;
 
 	//driver->setTextureCreationFlag(irr::video::ETCF_ALWAYS_32_BIT,true);
 
@@ -3936,13 +4497,15 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	//playerShip->SetMotionType(SpaceObject::MOTION_NAVIGATION);
 	playerShip->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NAVIGATION);
 	//playerShip->SetRotation(90);
-	playerShip->SetRotation(TWO_PI*0.25);//90 degrees
+	playerShip->SetFloatProperty(SpaceObject::ROTATION_ANGLE,TWO_PI*0.25);//90 degrees
 	playerShip->SetSpeed(vector3d(0,0,0));
 	//playerShip->SetMaxThrust(100000,150);
-	playerShip->SetMaxThrust(100000,5);
+	//playerShip->SetMaxThrust(100000,5);
+	playerShip->SetFloatProperty(SpaceObject::MAX_THRUST,100000);
+	playerShip->SetFloatProperty(SpaceObject::MAX_ROT_THRUST,5);
 	playerShip->SetName(L"Player");
-	playerShip->SetMaxFTLGravity(0.003138);
-	playerShip->SetRadius(0.5);
+	playerShip->SetFloatProperty(SpaceObject::MAX_FTL_GRAVITY,0.003138);
+	playerShip->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0.5);
 	//acceleration = 0.003138 <=> gravity = -5.75 "dgr"
 
 
@@ -4622,8 +5185,8 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	//inputDirection = wormhole->GetRotation();
 
 	wprintf(L"DG: player falls into %ws\r\n",wormhole->GetName().c_str());
-	galaxyQuadrant.X = wormhole->GetIntProperty(WORMHOLE_TO_X);
-	galaxyQuadrant.Y = wormhole->GetIntProperty(WORMHOLE_TO_Y);
+	galaxyQuadrant.X = wormhole->GetIntProperty(TRAVEL_TO_X);
+	galaxyQuadrant.Y = wormhole->GetIntProperty(TRAVEL_TO_Y);
 
 	GalaxyStarSystem* exitTo = physics->GetRoot()->GetGalaxy()->GetStarSystem(galaxyQuadrant);//get obj with basic info about system where we will exit
 	galaxyCoordinates = exitTo->GetGalaxyCoordinates();//get galaxy coords
@@ -4655,6 +5218,7 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 		position.X +=direction.X;
 		position.Y +=direction.Y;
 	}
+	prevPosition = position;
 
 	/*rotation += outputWormhole->GetRotation()-inputDirection;
 	position = outputWormhole->GetPosition()+GetDirection()*10.0;
@@ -4668,6 +5232,96 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	exitTo->unlock(0);//free if not stored somewhere else
 
 	return;
+}
+
+void PlayerShip::FallIntoStargate(SpaceObject* stargate)
+{
+//	f64 inputDirection;
+//	f64 toRotate;
+	vector3d stargateAxis;
+	vector3d outputStargateAxis;
+	vector3d newSpeed;
+	vector3d inputSpeed;
+	vector2ds galaxyQuadrant;
+	f64 fallLocation;//falling position along stargate event horizon
+	f64 rotAngle;
+	SpaceObject* outputStargate;
+
+	stargateAxis.X = stargate->GetDirection().Y;
+	stargateAxis.Y = -stargate->GetDirection().X;
+
+	rotAngle = -stargate->GetFloatProperty(SpaceObject::ROTATION_ANGLE);
+	fallLocation = stargateAxis.dotProduct(position-stargate->GetPosition());
+	inputSpeed = speed-stargate->GetSpeed();
+
+	wprintf(L"DG: player falls into %ws\r\n",stargate->GetName().c_str());
+	galaxyQuadrant.X = stargate->GetIntProperty(TRAVEL_TO_X);
+	galaxyQuadrant.Y = stargate->GetIntProperty(TRAVEL_TO_Y);
+
+	GalaxyStarSystem* exitTo = physics->GetRoot()->GetGalaxy()->GetStarSystem(galaxyQuadrant);//get obj with basic info about system where we will exit
+	galaxyCoordinates = exitTo->GetGalaxyCoordinates();//get galaxy coords
+	physics->GetRoot()->GoStarSystem(exitTo);//force game to go player to this star systems (includes generation of planets and so on)
+
+	outputStargate = physics->GetFirstObject(STARGATE,2);
+		
+	//toRotate = (outputWormhole->GetRotation()-inputDirection)*CoeffDegreesToRadians;
+
+	if (outputStargate)
+	{
+		outputStargateAxis.X = outputStargate->GetDirection().Y;
+		outputStargateAxis.Y = -outputStargate->GetDirection().X;
+		rotAngle += TWO_PI*0.5 + outputStargate->GetFloatProperty(SpaceObject::ROTATION_ANGLE);//+TWO_PI*0.5;
+
+		newSpeed.X = inputSpeed.X*cos(rotAngle)-inputSpeed.Y*sin(rotAngle);
+		newSpeed.Y = inputSpeed.Y*cos(rotAngle)+inputSpeed.X*sin(rotAngle);
+		newSpeed.Z = 0;
+
+		speed = newSpeed+outputStargate->GetSpeed();
+		position = outputStargate->GetPosition()+speed*0.01-outputStargateAxis*fallLocation;
+	}
+	else
+	{
+		//should not happens
+		//TODO: random location
+		position = vector3d(0);
+	}
+	prevPosition = position;
+	
+	outputStargate->SetIntProperty(VISIBLE_TO_PLAYER,1);
+	outputStargate->SetIntProperty(CURRENT_PROCESS,PROCESS_STARGATE_OPENING);
+	outputStargate->SetIntProperty(TRAVEL_TO_X,-100000);
+	outputStargate->SetFloatProperty(PROCESS_START_TIME,physics->globalTime-1);//TODO: remove this cheat
+
+
+	physics->Activate();
+
+	exitTo->unlock(0);//free if not stored somewhere else
+
+	return;
+}
+
+void PlayerShip::ScanSpace()
+{
+	bool found;
+	core::array<SpaceObject*> foundObjects;
+	physics->GetObjectsAtDistance(&foundObjects,position,1e4);
+	found = false;
+	for (u32 i = 0;i<foundObjects.size();i++)
+	{
+		if (foundObjects[i]!=this)
+		{
+			found = true;
+			if (foundObjects[i]->GetIntProperty(STARGATE)==1)
+			{
+				wprintf(L" Scaner found %ws, it has address %I64u\r\n",foundObjects[i]->GetName().c_str(),physics->GetRoot()->GetCurrentSystem()->GetStargateAddress());
+				continue;
+			}
+			wprintf(L" Scaner found %ws\r\n",foundObjects[i]->GetName());
+		}
+	}
+	if (!found)
+		wprintf(L" Scaner not found anything\r\n");
+
 }
 
 void PlayerShip::SetControlThrust(f64 newThrust)
@@ -4936,6 +5590,49 @@ void Galaxy::Init()
 	wprintf(L"DG: Galaxy generated, class %ws, ~%.0f star systems\r\n",galaxyClass.c_str(),starCountEstimation);
 	wprintf(L"    radius: ~%.0f ly\r\n",outerRadius);
 
+	
+	galaxyRNG->SetOffset(100000);
+
+	//RSA-36 key pair
+	//p = 262151, q = 131111
+	sgPublicKeyMod=34370879761;//0x800AA0111
+	sgPublicKeyExp=3;
+	sgPrivateKeyExp=22913657667;//0x555C2AB43
+
+	//randomization values
+	sgCoordXorValue=galaxyRNG->GenerateByte();
+	sgCoordXorValue+=((u64)galaxyRNG->GenerateByte())<<8;
+	sgCoordXorValue+=((u64)galaxyRNG->GenerateByte())<<16;
+	sgCoordXorValue+=((u64)galaxyRNG->GenerateByte())<<24;
+	sgCoordXorValue+=((u64)galaxyRNG->GenerateByte()&3)<<32;//34 bits
+	sgAddressAddValue=galaxyRNG->GenerateByte();
+	sgAddressAddValue+=((u64)galaxyRNG->GenerateByte())<<8;
+	sgAddressAddValue+=((u64)galaxyRNG->GenerateByte())<<16;
+	sgAddressAddValue+=((u64)galaxyRNG->GenerateByte())<<24;
+	sgAddressAddValue+=((u64)galaxyRNG->GenerateByte()&7)<<32;//35 bits
+
+
+	
+	/*
+	//DEBUG
+	//Encryption system self test
+	for (number=0;number<100000;number++)
+	{
+		vector2ds coords1,coords2;
+		u64 address;
+		coords1.X = -65536+GlobalURNG::Instance().GenerateByte();
+		coords1.X += GlobalURNG::Instance().GenerateByte()*256;
+		coords1.X += (GlobalURNG::Instance().GenerateByte()&1)*65536;
+		coords1.Y = -65536+GlobalURNG::Instance().GenerateByte();
+		coords1.Y += GlobalURNG::Instance().GenerateByte()*256;
+		coords1.Y += (GlobalURNG::Instance().GenerateByte()&1)*65536;
+		address = Coordinates2StargateAddress(coords1);
+		coords2 = StargateAddress2Coordinates(address);
+		if (coords1!=coords2)
+			wprintf(L"Error on encryption system self test\r\n");
+	}
+	*/
+
 	UpdateKnownStars();
 }
 
@@ -5103,8 +5800,44 @@ u32 Galaxy::CheckStarPresence(vector2ds coordinates)
 	}
 
 	if (number<starDensity)
-		return 1;//star present (random nu,ber is less than density)
+		return 1;//star present (random number is less than density)
 	return 0;//no star
+}
+
+//Check presence of stargate in system
+//checkStar - check star presence or not
+//return: 0 - no star system/ no stargate, 1 - stargate present, 2 - stargate present but locked
+u32 Galaxy::CheckStargatePresence(vector2ds coordinates, bool checkStar)
+{
+	s32 number;
+
+	if (checkStar)
+	{
+		if (CheckStarPresence(coordinates)==0)
+			return 0;
+	}
+
+	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,coordinates.X,coordinates.Y);
+	number = galaxyRNG->GetByteByOffset(100);
+
+	if (number<3)
+	{
+		//no stargate
+		return 0;
+	}
+	else
+	{
+		//stargate is present
+		number = galaxyRNG->GenerateByte();
+
+		if (number<3)
+		{
+			//stargate locked
+			return 2;
+		}
+	}
+
+	return 1;//stargate present and working
 }
 
 /*
@@ -5277,6 +6010,27 @@ GalaxyStarSystem* Galaxy::DebugJump()
 
 }
 
+//Generate wormhole in a big circle around and no clean them
+void Galaxy::DebugShowWormholes()
+{
+	vector2ds currentAnchor = knownStarsAnchor;
+	s32 x,y;
+
+	for(y = -100;y<100;y+=10)
+	for(x = -100;x<100;x+=10)
+	{
+		knownStarsAnchor = currentAnchor;
+		knownStarsAnchor.X +=x;
+		knownStarsAnchor.Y +=y;
+		UpdateKnownStars(1);
+		GenerateWormholes(1);
+	}
+
+	knownStarsAnchor = currentAnchor;
+	UpdateKnownStars(1);
+	GenerateWormholes(1);
+}
+
 //Object should be unlock()-ed to 0 outside
 GalaxyStarSystem* Galaxy::SeedStar(vector2ds coordinates)
 {
@@ -5298,7 +6052,7 @@ GalaxyStarSystem* Galaxy::SeedStar(vector2ds coordinates)
 }
 
 
-void Galaxy::UpdateKnownStars()
+void Galaxy::UpdateKnownStars(s32 param)
 {
 	s32 x,y;
 	s32 x0,y0,x1,y1;
@@ -5307,7 +6061,11 @@ void Galaxy::UpdateKnownStars()
 	vector2ds coordinates;
 
 	ClearKnownStars();
-	ClearWormholes();
+
+	if (param ==0)
+	{
+		ClearWormholes();
+	}
 
 	//Assumed that knownStarsAnchor is rounded to 10 l.y.
 	x0 = knownStarsAnchor.X-20;
@@ -5473,7 +6231,7 @@ s32 Galaxy::HilbertCurveDirection(s32 x, s32 y, s32 direction)
 
 }
 
-void Galaxy::GenerateWormholes()
+void Galaxy::GenerateWormholes(s32 param)
 {
 	u32 i,j,k;
 	f64 distSQ;
@@ -5492,10 +6250,13 @@ void Galaxy::GenerateWormholes()
 	WormholeInfo* newWormhole;
 	//knownWormholes.push_back();
 
-	if (wormholesGenerated)
-		return;//do nothing
+	if (param==0)
+	{
+		if (wormholesGenerated)
+			return;//do nothing
 
-	ClearWormholes();
+		ClearWormholes();
+	}
 
 	if (knownStars.size()>1)
 	{
@@ -5519,6 +6280,7 @@ void Galaxy::GenerateWormholes()
 		nearStars = new s32[knownStars.size()];
 
 		//v4 wave-alg , very good, but gives a few asymmetry
+		//network falls to pieces where stellardensity is about 0.0033 and below
 
 		//Assumed that knownStarsAnchor is rounded to 10 l.y.
 		//and knownStars is calced for (knownStarsAnchor-20;knownStarsAnchor+30) quad
@@ -5653,6 +6415,8 @@ lSkip:;
 
 void Galaxy::GetWormholesFrom(vector2ds quadrant, core::array<WormholeInfo*>* list)
 {
+	GenerateWormholes();
+
 	list->clear();
 	for (u32 i=0;i<knownWormholes.size();i++)
 	{
@@ -5680,6 +6444,82 @@ void Galaxy::ClearKnownStars()
 	for (u32 i=0;i<knownStars.size();i++)
 		knownStars[i]->unlock(1);//free
 	knownStars.clear();
+}
+
+
+//convert coordinates to address
+u64 Galaxy::Coordinates2StargateAddress(vector2ds quadrant)
+{
+	/*//no-encryption version
+	u64 x,y,address;
+	x = quadrant.X+65536;
+	y = quadrant.Y+65536;
+	address = 0x400000000 | y | (x<<17);*/
+
+	if (quadrant.X<-65536 || quadrant.X>65535 || quadrant.Y<-65536 || quadrant.Y>65535)
+		return 0;//outside 131072x131072 grid
+
+	u64 x,y,address;
+	x = quadrant.X+65536;
+	y = quadrant.Y+65536;
+	address = 0x400000000 | y | (x<<17);//combine coordinates and padding
+	address^= sgCoordXorValue;//xor coordinates with randomization
+	
+	address = fp_powmod(address,sgPrivateKeyExp,sgPublicKeyMod)+sgAddressAddValue;//encrypt on SK, add randomization value
+
+	if (address>sgPublicKeyMod)
+		address-=sgPublicKeyMod; //reduce if needed
+	
+	return address;//encryption on SK
+}
+
+//convert address to coordinates  (two error cases possible: - address is greater than PK and decryption does not have padding)
+vector2ds Galaxy::StargateAddress2Coordinates(u64 address)
+{
+/*	//no-encryption version
+	vector2ds result;
+	u64 x,y;
+	result.X = -100000;
+	result.Y = 0;
+	if (address>0x7FFFFFFFF)
+		return result;
+	if (address<0x400000000)
+	{
+		result.Y = 1;
+		return result;
+	}
+	y = address&0x1FFFF;
+	x = (address>>17)&0x1FFFF;
+	result.X = (s32)x - 65536;
+	result.Y = (s32)y - 65536;
+	return result;*/
+
+	vector2ds result;
+	u64 decrypt,x,y;
+	result.X = -100000;
+	result.Y = 0;
+	if (address>sgPublicKeyMod)
+		return result;//address is greater than PK
+
+	if (address<sgAddressAddValue)
+		address+=sgPublicKeyMod;
+	address-=sgAddressAddValue;//remove randomization value
+
+	//TODO: could be optimized to 2 fp_mulmod (while sgPublicKeyExp = 3)
+	decrypt = fp_powmod(address,sgPublicKeyExp,sgPublicKeyMod);//decrypt on PK
+
+	if (decrypt<0x400000000)
+	{//decryption result does not have required padding
+		result.Y = 1;
+		return result;
+	}
+	decrypt^= sgCoordXorValue;//xor coordinates with randomization
+
+	y = decrypt&0x1FFFF;
+	x = (decrypt>>17)&0x1FFFF;
+	result.X = ((s32)x) - 65536;
+	result.Y = ((s32)y) - 65536;
+	return result;
 }
 
 //#########################################################################
@@ -5752,9 +6592,10 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager, Gala
 
 	*/
 
-	StarComponent *rootComponent;
+	StarComponent* rootComponent;
 
-	SpaceObject *root;
+	SpaceObject* root;
+	SpaceObject* stargate;
 	u32 number;
 	f64 starMass;
 
@@ -5800,6 +6641,11 @@ void GalaxyStarSystem::GenerateStarSystem(ResourceManager* resourceManager, Gala
 	//root->SetMotionType(SpaceObject::MOTION_NONE);
 	root->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NONE);
 	root->SetPosition(vector3d(0));
+
+	stargateAddress = galaxy->Coordinates2StargateAddress(galaxyQuadrant);
+	stargate = GenerateStargate(resourceManager,rootComponent,galaxy);
+	if (stargate)
+		stargate->SetOrbitalParent(root);
 
 	GenerateWormholes(resourceManager,rootComponent,galaxy);
 
@@ -5889,7 +6735,7 @@ void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 m
 		//size = 190*6.37;
 		//mass = 330000.0*5.9736;
 		star = resourceManager->MakeStar(starSize);
-		star->SetMass(mass);//in 10^24 kg
+		star->SetFloatProperty(SpaceObject::MASS,mass);//in 10^24 kg
 		//star->SetGravity(true,false);
 		star->SetIntProperty(SpaceObject::EMIT_GRAVITY,1);
 		star->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
@@ -5971,7 +6817,7 @@ void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 m
 				swprintf(tmp, 255, L"Planet %i", i);
 				planet->SetName(tmp);
 			}
-			planet->SetMass(planetMass);//in 10^24 kg
+			planet->SetFloatProperty(SpaceObject::MASS,planetMass);//in 10^24 kg
 			//planet->SetGravity(true,false);
 			planet->SetIntProperty(SpaceObject::EMIT_GRAVITY,1);
 			planet->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
@@ -6001,7 +6847,7 @@ void GalaxyStarSystem::GenerateComponent(ResourceManager* resourceManager, f64 m
 
 				moon = resourceManager->MakePlanet(moonRadius);
 				moon->SetOrbitalParams(planet,moonOrbitRadius,moonOrbitPeriod,moonOrbitPhase);
-				moon->SetMass(moonMass);
+				moon->SetFloatProperty(SpaceObject::MASS,moonMass);
 				//moon->SetGravity(true,false);
 				moon->SetIntProperty(SpaceObject::EMIT_GRAVITY,1);
 				moon->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
@@ -6237,7 +7083,7 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 	else
 	{
 		star = resourceManager->MakeStar(component->radius);
-		star->SetMass(component->mass);//in 10^24 kg
+		star->SetFloatProperty(SpaceObject::MASS,component->mass);//in 10^24 kg
 		//star->SetGravity(true,false);
 		star->SetIntProperty(SpaceObject::EMIT_GRAVITY,1);
 		star->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
@@ -6358,7 +7204,7 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 			planet->SetName(tmp);
 		}
 
-		planet->SetMass(planetMass);//in 10^24 kg
+		planet->SetFloatProperty(SpaceObject::MASS,planetMass);//in 10^24 kg
 		//planet->SetGravity(true,false);
 		planet->SetIntProperty(SpaceObject::EMIT_GRAVITY,1);
 		planet->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
@@ -6394,7 +7240,7 @@ SpaceObject* GalaxyStarSystem::FinalizeComponent(ResourceManager* resourceManage
 
 			moon = resourceManager->MakePlanet(moonRadius);
 			moon->SetOrbitalParams(planet,moonOrbitRadius,moonOrbitPeriod,moonOrbitPhase);
-			moon->SetMass(moonMass);
+			moon->SetFloatProperty(SpaceObject::MASS,moonMass);
 			//moon->SetGravity(true,false);
 			moon->SetIntProperty(SpaceObject::EMIT_GRAVITY,1);
 			moon->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
@@ -6427,7 +7273,6 @@ lNextPlanet:
 		planetOrbit = nextOrbit;
 	}
 
-	//TODO: store max orbit somewhere
 
 	return returnObject;
 }
@@ -6457,7 +7302,6 @@ void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarC
 	
 	//wormholeDistance = 662251140; //DEBUG
 
-	galaxy->GenerateWormholes();
 	galaxy->GetWormholesFrom(galaxyQuadrant,&listWormholeLinks);
 
 	for (i=0;i<listWormholeLinks.size();i++)
@@ -6495,7 +7339,7 @@ void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarC
 			wormhole->SetPosition(vector3d(direction.X*thisDistance,direction.Y*thisDistance,0));
 			//wormhole->SetRotation(90+atan2(direction.Y,direction.X)/CoeffDegreesToRadians);
 
-			wormhole->SetRotation(TWO_PI*0.25+atan2(direction.Y,direction.X));//perpendicular to direction to destination
+			wormhole->SetFloatProperty(SpaceObject::ROTATION_ANGLE,TWO_PI*0.25+atan2(direction.Y,direction.X));//perpendicular to direction to destination
 			/*
 			{
 				wchar_t tmp[255];
@@ -6505,10 +7349,10 @@ void GalaxyStarSystem::GenerateWormholes(ResourceManager* resourceManager, StarC
 			//wormhole->SetName(text_string(L"Unknown wormhole"));
 			wormhole->SetName(text_string(L"Wormhole to ")+destSystem->name);
 
-			//wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_X,x+galaxyQuadrant.X);
-			//wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_Y,y+galaxyQuadrant.Y);
-			wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_X,destination.X);
-			wormhole->SetIntProperty(SpaceObject::WORMHOLE_TO_Y,destination.Y);
+			//wormhole->SetIntProperty(SpaceObject::TRAVEL_TO_X,x+galaxyQuadrant.X);
+			//wormhole->SetIntProperty(SpaceObject::TRAVEL_TO_Y,y+galaxyQuadrant.Y);
+			wormhole->SetIntProperty(SpaceObject::TRAVEL_TO_X,destination.X);
+			wormhole->SetIntProperty(SpaceObject::TRAVEL_TO_Y,destination.Y);
 
 			listWormholes.push_back(wormhole);
 
@@ -6551,6 +7395,56 @@ labelBreakDistanceCheck:;
 
 	
 }
+
+
+SpaceObject* GalaxyStarSystem::GenerateStargate(ResourceManager* resourceManager, StarComponent* component, Galaxy* galaxy)
+{
+	s32 stargateStatus = galaxy->CheckStargatePresence(galaxyQuadrant,false);
+	if (stargateStatus==0)
+		return 0;//no stargate in system, nothing to do
+	//TODO: destroyed stargate could be displayed
+
+	f64 stargateDistance, dist2;
+	f64 orbitPhase;
+	f64 orbitPeriod;
+	f64 rotation;
+	s32 number;
+	SpaceObject* stargate;
+
+	stargateDistance = component->innerOrbitLimit * 2.5;
+	dist2 = component->maxOrbiting*1.1;
+	if (dist2>stargateDistance) stargateDistance = dist2;
+	dist2 = 100000.0;
+	if (dist2>stargateDistance) stargateDistance = dist2;
+
+	component->maxOrbiting = stargateDistance;
+	
+	//stargateDistance = 100000;//DEBUG
+
+	//OrbitPhase = epoch - totally random
+	number = starRNG->GenerateByte();
+	orbitPhase = number * TWO_PI/256.0;
+
+	//rotation - random
+	number = starRNG->GenerateByte();
+	rotation = number * TWO_PI/256.0;
+
+	orbitPeriod = TWO_PI * stargateDistance * sqrt(stargateDistance/(component->mass*G_CONSTANT));
+
+	stargate = resourceManager->MakeStargate();
+
+	stargate->SetOrbitalParams(0,stargateDistance,orbitPeriod,orbitPhase);
+	//parent will be set up in caller function
+
+	stargate->SetFloatProperty(SpaceObject::ROTATION_ANGLE,rotation);
+	stargate->SetName(text_string(L"Stargate"));
+
+	//wprintf(L" * Stargate is present in system, address %I64u\r\n",stargateAddress);//DEBUG!
+	wprintf(L" * Stargate is present in system\r\n");
+
+	return stargate;
+}
+
 
 //#########################################################################
 //SHA-1 - SHA-1 crypto hash
@@ -6955,6 +7849,9 @@ StarComponent::~StarComponent()
 int main(int ArgumentCount, char **Arguments) {
 
 	printf("DangerGalaxy demo1 started\r\n");
+
+	//u64 number1=0x0400000000,number2=22913657667,number3=34370879761;
+	//printf("rsa-test: fp_powmod(%I64u,%I64u,%I64u)=%I64u\r\n",number1,number2,number3,fp_powmod(number1,number2,number3));
 
 	{
 		DeterminedRandomGenerator* pRNG = new DeterminedRandomGenerator();//delete is below
