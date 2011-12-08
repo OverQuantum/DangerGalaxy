@@ -228,6 +228,10 @@ coding demo1:
 111204: ADD: scanning space (it prints address of stargate if found)
 111205: ADD: fp_mulmod and fp_powmod (for low-len RSA)
 111206: ADD: stargate address<->coord encryption
+111207: FIX: _wtoi64 replaced by stoi64
+111208: ADD: stargate address<->text conversion functions (currently use hex 3:3:3 format)
+111208: ADD: typing letters A-F
+111208: FIX: change direction of player ship after passing stargate
 
 
 
@@ -286,7 +290,6 @@ TODO:
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - stargate system
-  + address<->coord encryption
   - "killing" non-player objects
   - defence force-field around gate object
   - better mesh and textures
@@ -295,7 +298,7 @@ TODO:
   .? advanced triangulation for building wormhole net
   - "killing" non-player objects
 - map
-  ? grid in metres for detailes zooms
+  ? grid in metres for detailed zooms
 - save & load
   + global position and speed
   . rotation, thrust
@@ -553,6 +556,20 @@ u64 fp_powmod(u64 number, u64 power, u64 modulus)
 	return result;
 }
 
+u64 stoi64(text_string string)
+{
+	u64 result=0;
+	const wchar_t* string_w = string.c_str();
+	u32 i,len = string.size();
+	for(i=0;i<len;i++)
+		if (string_w[i]>=L'0' && string_w[i]<=L'9')
+		{
+			result*=10;
+			result+=string_w[i]-L'0';
+		}
+	return result;
+}
+
 //#########################################################################
 //classes
 
@@ -773,6 +790,7 @@ class SpaceObject {
 		void SetName(text_string newName) {name = newName;}
 		void SetIntProperty(IntProperty propertyNumber, s32 newValue);
 		void SetFloatProperty(FloatProperty propertyNumber, f64 newValue);
+		void AddFloatProperty(FloatProperty propertyNumber, f64 addValue);
 		
 		vector3d GetGravityAcceleration(vector3d location);//Get gravity, emitted by this object
 		vector3d GetXGravityAcceleration(vector3d location);//Get X-gravity, emitted by this object
@@ -1190,6 +1208,8 @@ public:
 
 	u64 Coordinates2StargateAddress(vector2ds quadrant);//convert coordinates to address
 	vector2ds StargateAddress2Coordinates(u64 address);//convert address to coordinates  (two error cases possible: - address is greater than PK and decryption does not have padding)
+	u64 text2StargateAddress(text_string text);//convert text to address
+	text_string StargateAddress2text(u64 address);//convert text to address
 
 	//void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
 	void SaveMapTexture();
@@ -1785,7 +1805,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 			{
 				acceleration += physics->GetGravityAcceleration(position);
 			}
-			SetFloatProperty(ROTATION_ANGLE,GetFloatProperty(ROTATION_ANGLE)+GetFloatProperty(ROTATION_SPEED)*time);
+			AddFloatProperty(ROTATION_ANGLE,GetFloatProperty(ROTATION_SPEED)*time);
 			
 			prevSpeedVector = speed;
 			speed += acceleration*time;
@@ -2009,6 +2029,11 @@ void SpaceObject::SetIntProperty(IntProperty propertyNumber, s32 newValue)
 void SpaceObject::SetFloatProperty(FloatProperty propertyNumber, f64 newValue)
 {
 	FloatProperties[propertyNumber]=newValue;
+}
+
+void SpaceObject::AddFloatProperty(FloatProperty propertyNumber, f64 addValue)
+{
+	FloatProperties[propertyNumber]+=addValue;
 }
 
 
@@ -2782,15 +2807,15 @@ void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
 		return;
 	}
 
-	if (destGate->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_NONE)
-	{
-		wprintf(L" ** Stargate instantly respond that they are busy\r\n");
-		return;
-	}
-
 	if (galaxyQuadrant == coordinates)
 	{
 		wprintf(L" ** Stargate instantly respond that it is their address\r\n");
+		return;
+	}
+
+	if (destGate->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_NONE)
+	{
+		wprintf(L" ** Stargate instantly respond that they are busy\r\n");
 		return;
 	}
 
@@ -2803,7 +2828,7 @@ void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
 		return;
 	}
 
-	wprintf(L" ** ** Stargate activating to (%i,%i)...\r\n",coordinates.X,coordinates.Y);
+	wprintf(L" ** ** Stargate activating to (%i,%i)...\r\n",coordinates.X,coordinates.Y);//DEBUG!
 	stargatePresence = gameRoot->GetGalaxy()->CheckStargatePresence(coordinates,true);
 	if (stargatePresence==0)
 	{
@@ -3227,8 +3252,8 @@ RealSpaceView::RealSpaceView()
 {
 	typing = 0;
 	typingText = L"";
-	typingTextPrev = L"";
-	//typingTextPrev = L"31496011763";//DEBUG!
+	//typingTextPrev = L"";
+	typingTextPrev = L"48A:887:CE4";//DEBUG!
 }
 
 void RealSpaceView::Init()
@@ -3622,6 +3647,18 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			typingText += L"8";
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_9))
 			typingText += L"9";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_A))
+			typingText += L"A";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_B))
+			typingText += L"B";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_C))
+			typingText += L"C";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_D))
+			typingText += L"D";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_E))
+			typingText += L"E";
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_F))
+			typingText += L"F";
 		if (eventReceiver->IsKeyPressed(irr::KEY_UP))
 			typingText = typingTextPrev;
 		if (eventReceiver->IsKeyPressed(irr::KEY_BACK))
@@ -3631,7 +3668,9 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			typingTextPrev = typingText;
 			if (typing==1)
 			{
-				u64 address = _wtoi64(typingText.c_str());
+				//u64 address = _wtoi64(typingText.c_str());
+				//u64 address = stoi64(typingText);
+				u64 address = gameRoot->GetGalaxy()->text2StargateAddress(typingText);
 				wprintf(L" * Typed stargate address: %I64i\r\n",address);
 				//playerShip->FallIntoStargate(address);
 				gamePhysics->SendStargateAddress(playerShip,address);
@@ -5278,6 +5317,8 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 
 		speed = newSpeed+outputStargate->GetSpeed();
 		position = outputStargate->GetPosition()+speed*0.01-outputStargateAxis*fallLocation;
+		AddFloatProperty(SpaceObject::ROTATION_ANGLE,rotAngle);
+		
 	}
 	else
 	{
@@ -5313,10 +5354,10 @@ void PlayerShip::ScanSpace()
 			found = true;
 			if (foundObjects[i]->GetIntProperty(STARGATE)==1)
 			{
-				wprintf(L" Scaner found %ws, it has address %I64u\r\n",foundObjects[i]->GetName().c_str(),physics->GetRoot()->GetCurrentSystem()->GetStargateAddress());
+				wprintf(L" Scaner found %ws, it has address %ws\r\n",foundObjects[i]->GetName().c_str(),physics->GetRoot()->GetGalaxy()->StargateAddress2text(physics->GetRoot()->GetCurrentSystem()->GetStargateAddress()).c_str());
 				continue;
 			}
-			wprintf(L" Scaner found %ws\r\n",foundObjects[i]->GetName());
+			wprintf(L" Scaner found %ws\r\n",foundObjects[i]->GetName().c_str());
 		}
 	}
 	if (!found)
@@ -6522,6 +6563,54 @@ vector2ds Galaxy::StargateAddress2Coordinates(u64 address)
 	return result;
 }
 
+//convert text to address
+u64 Galaxy::text2StargateAddress(text_string text)
+{
+	u64 result=0;
+	const wchar_t* text_w = text.c_str();
+	u32 i,len = text.size();
+	for(i=0;i<len;i++)
+	{
+		if (text_w[i]>=L'0' && text_w[i]<=L'9')
+		{
+			result*=16;
+			result+=text_w[i]-L'0';
+		}
+		if (text_w[i]>=L'a' && text_w[i]<=L'f')
+		{
+			result*=16;
+			result+=10+text_w[i]-L'a';
+		}
+		if (text_w[i]>=L'A' && text_w[i]<=L'F')
+		{
+			result*=16;
+			result+=10+text_w[i]-L'A';
+		}
+	}
+	return result;
+}
+
+//convert text to address
+text_string Galaxy::StargateAddress2text(u64 address)
+{
+	wchar_t tmp[255];
+	u32 len;
+	len = swprintf(tmp,L"%09I64X",address);
+	if (len>8)
+	{
+		tmp[len+2]=tmp[len];
+		tmp[len+1]=tmp[len-1];
+		tmp[len]=tmp[len-2];
+		tmp[len-1]=tmp[len-3];
+		tmp[len-2]=':';
+		tmp[len-3]=tmp[len-4];
+		tmp[len-4]=tmp[len-5];
+		tmp[len-5]=tmp[len-6];
+		tmp[len-6]=':';
+	}
+	return tmp;
+}
+
 //#########################################################################
 //GalaxyStarSystem
 
@@ -7439,7 +7528,7 @@ SpaceObject* GalaxyStarSystem::GenerateStargate(ResourceManager* resourceManager
 	stargate->SetFloatProperty(SpaceObject::ROTATION_ANGLE,rotation);
 	stargate->SetName(text_string(L"Stargate"));
 
-	//wprintf(L" * Stargate is present in system, address %I64u\r\n",stargateAddress);//DEBUG!
+	//wprintf(L" * Stargate is present in system, address %I64u\r\n",stargateAddress);//DEBUG
 	wprintf(L" * Stargate is present in system\r\n");
 
 	return stargate;
