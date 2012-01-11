@@ -233,6 +233,9 @@ coding demo1:
 111208: ADD: typing letters A-F
 111208: FIX: change direction of player ship after passing stargate
 
+120111: ADD: mousewheel to control zoom (RealSpace and Map)
+120111: CHG: autopilot breaking and orbiting is now in autopilot queue
+120111: Adding: some mouse control
 
 
 DONE:
@@ -289,10 +292,22 @@ TODO:
 
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
+- autopiloting
+  + mouse control
+  + getting RealSpace coords from mouse
+  - autopilot aiming
+  - autopliot speedup and slowdown
+- zoom
+  - use mouse pointer to center on mouse-wheel zoom
+- HyperSpace
+- weapons
+  - firing plasma
+  - lightspeed limit
+  - removing after long distance
 - stargate system
+  - better mesh and textures
   - "killing" non-player objects
   - defence force-field around gate object
-  - better mesh and textures
 - wormhole network
   - animation: opening on approaching mass and closing - by process
   .? advanced triangulation for building wormhole net
@@ -377,10 +392,12 @@ QUESTIONS
 CONTROL on RealSpace main:
 A/D - rotate
 W/S - thrust
-Space - breaking (autopilot) relative to distant stars
 1/2/3/4/5/6 - different thrust levels (1 - highest, 6 - lowest)
+Space - breaking (autopilot) relative to distant stars
 O - orbiting (around object which produce max graviry force at player's ship)
+ESC - stop autopilot
 Up/Down - zoom
+MouseWheel - zoom
 Tab - switch to map
 F - jump to FTL (FTL works only if gravity < -5.75 dgr)
 F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
@@ -396,6 +413,7 @@ H - (DEBUG) teleport to random wormhole and slow fall into
 CONTROL on map:
 W/A/S/D - pan
 Up/Down - zoom
+MouseWheel - zoom
 PgUp/PgDn - zoom in/out by big steps
 Esc - back to RealSpace
 
@@ -467,6 +485,9 @@ using namespace irr;
 //Maximum x-gravity for PlusMinus
 #define XGRAVITY_MAX_PLUSMINUS -35
 
+
+#define KEY_PSEUDO_MOUSEWHEELUP 0xD0
+#define KEY_PSEUDO_MOUSEWHEELDOWN 0xD1
 //#define FRAME_TIME_MIN 0.001
 
 
@@ -597,6 +618,7 @@ class DeterminedRandomGenerator;
 class UndeterminedRandomGenerator;
 class GlobalURNG;
 class StarComponent;
+class AutopilotInstruction;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -609,12 +631,66 @@ held down, and so we will remember the current state of each key.
 class MyEventReceiver : public IEventReceiver
 {
 public:
+
+	// We'll create a struct to record info on the mouse state
+	struct SMouseState
+	{
+		vector2ds Position;
+		vector2ds LastClick;
+		u32 LastClickButtons;
+	} MouseState;
+
 	// This is the one method that we have to implement
 	virtual bool OnEvent(const SEvent& event)
 	{
 		// Remember whether each key is down or up
-		if (event.EventType == irr::EET_KEY_INPUT_EVENT)
+		switch(event.EventType)
+		{
+		case irr::EET_KEY_INPUT_EVENT:
 			KeyIsDown[event.KeyInput.Key] = event.KeyInput.PressedDown;
+			break;
+		case irr::EET_MOUSE_INPUT_EVENT:
+			switch(event.MouseInput.Event)
+			{
+			case EMIE_LMOUSE_PRESSED_DOWN:
+			case EMIE_RMOUSE_PRESSED_DOWN:
+			case EMIE_MMOUSE_PRESSED_DOWN:
+				//MouseState.LeftButtonDown = true;
+				MouseState.LastClick.X = event.MouseInput.X;
+				MouseState.LastClick.Y = event.MouseInput.Y;
+				MouseState.LastClickButtons = event.MouseInput.ButtonStates;
+				//wprintf(L"Mouse click: %i,%i\r\n",MouseState.LastClick.X,MouseState.LastClick.Y);
+				break;
+
+			case EMIE_MOUSE_WHEEL:
+				//MouseState.LeftButtonDown = false;
+				//MouseState.LastClickButtons = MouseState.LastClickButtons;
+				if (event.MouseInput.Wheel>0)
+				{
+					KeyIsDown[KEY_PSEUDO_MOUSEWHEELUP]=true;
+					KeyIsDown[KEY_PSEUDO_MOUSEWHEELDOWN]=false;
+				}
+				else
+				{
+					KeyIsDown[KEY_PSEUDO_MOUSEWHEELUP]=false;
+					KeyIsDown[KEY_PSEUDO_MOUSEWHEELDOWN]=true;
+				}
+				break;
+
+			case EMIE_MOUSE_MOVED:
+				MouseState.Position.X = event.MouseInput.X;
+				MouseState.Position.Y = event.MouseInput.Y;
+				break;
+
+			default:
+				// We won't use the wheel
+				break;
+			}
+			break;
+		default:
+			break;
+		}
+
 
 		return false;
 	}
@@ -636,12 +712,18 @@ public:
 		return false;
 	}
 
+	vector2ds GetMousePosition() {return MouseState.Position;}
+	vector2ds GetLastMouseClick() {return MouseState.LastClick;}
+	void RemoveLastMouseClick() {MouseState.LastClick = vector2ds(-1);}
+
 	//void CleanKeyStatus(EKEY_CODE keyCode) {KeyIsDown[keyCode]=false;}
 	
 	MyEventReceiver()
 	{
 		for (u32 i=0; i<KEY_KEY_CODES_COUNT; ++i)
 			KeyIsDown[i] = false;
+		MouseState.Position = vector2ds(-1);
+		MouseState.LastClick = vector2ds(-1);
 	}
 
 private:
@@ -796,9 +878,12 @@ class SpaceObject {
 		vector3d GetXGravityAcceleration(vector3d location);//Get X-gravity, emitted by this object
 		void SetControl(f64 newValue, ControlType type);
 
-		void AutopilotBreak();//Stopping
-		void AutopilotOrbiting();//Setting to orbit
-		void AutopilotSetSpeed(vector3d requiredSpeed);//Matching speed
+		bool AutopilotBreak();//Stopping
+		bool AutopilotOrbiting();//Setting to orbit
+		bool AutopilotSetSpeed(vector3d requiredSpeed);//Matching speed
+
+		void AddAutopilot(AutopilotInstruction* instruction);
+		void BreakAutopilot();
 
 		void JumpToFTL(f64 ftlSpeed);
 		void BreakFTL(f64 remainingSpeed);
@@ -816,6 +901,8 @@ class SpaceObject {
 		//Arrays of properties
 		s32 IntProperties[INT_PROPERTIES_COUNT];
 		f64 FloatProperties[FLOAT_PROPERTIES_COUNT];
+
+		core::array<AutopilotInstruction*> autopilotQueue;
 
 		vector3d position;//current position in space, coordinates (zero at star system center of mass)
 		vector3d prevPosition;//previous position in space (used for checking collisions)
@@ -1424,6 +1511,24 @@ public:
 	StarComponent* subComponentB; //least massive, 0 if current is single object
 };
 
+//Elements of autopilot "script"
+class AutopilotInstruction
+{
+public:
+	enum AutopilotType : s32 {
+		AP_SETSPEED,        //Set speed to desired value, params: vector1 is required speed
+		AP_ORBITING,        //Set speed to orbit max-gravity object, params: none
+		AP_FLY_TO,          //Fly to specific location, params: vector1 is required location, vector2 is required speed
+		AP_FTL_TIMER,       //FTL jump for specific time, params: value1 is time 
+	};
+
+	AutopilotType instruction;
+	vector2d vector1;
+	vector2d vector2;
+	f64 value1;
+	f64 value2;
+};
+
 //#########################################################################
 //Class methods
 
@@ -1583,6 +1688,8 @@ SpaceObject::SpaceObject()
 SpaceObject::~SpaceObject()
 {
 //	name.~string();
+	BreakAutopilot();
+
 	return;
 }
 
@@ -1725,13 +1832,13 @@ void SpaceObject::AutopilotBreak()
 	}
 }*/
 
-void SpaceObject::AutopilotBreak()
+bool SpaceObject::AutopilotBreak()
 {
-	AutopilotSetSpeed(vector3d(0));
+	return AutopilotSetSpeed(vector3d(0));
 }
 
 //Breaking relative to distant-stars
-void SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
+bool SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
 {
 	vector3d direction = GetDirection();
 	vector3d changeSpeed = requiredSpeed-speed;
@@ -1743,7 +1850,7 @@ void SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
 	if (changeSpeed.getLength()<0.01)
 	{
 		speed = requiredSpeed;
-		return;
+		return true;
 	}
 	whereToRotate = direction.Y*speedNormalized.X - direction.X*speedNormalized.Y;
 
@@ -1758,7 +1865,7 @@ void SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
 			k = 200.0*changeSpeed.getLength()/GetFloatProperty(MAX_THRUST);//adjust breaking thrust power to partial of speed
 		}
 		SetControl(k,CONTROL_THRUST_RELATIVE);
-		return;
+		return false;
 	}
 
 	if (whereToRotate>0)
@@ -1769,6 +1876,7 @@ void SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
 	{
 		SetControl(1,CONTROL_ROTATION_SPEED_RELATIVE);
 	}
+	return false;
 }
 
 
@@ -1790,6 +1898,32 @@ void SpaceObject::UpdatePhysics(f64 time)
 	vector3d acceleration = vector3d(0,0,0);
 	vector3d prevSpeedVector;
 	prevPosition = position;
+
+	if (autopilotQueue.size()>0)
+	{
+		AutopilotInstruction* ins = autopilotQueue[0];
+		switch (ins->instruction)
+		{
+		case AutopilotInstruction::AP_SETSPEED:
+			if (AutopilotSetSpeed(vector3d(ins->vector1.X,ins->vector1.Y,0)))
+			{
+				delete ins;
+				autopilotQueue.erase(0);
+			}
+			break;
+		case AutopilotInstruction::AP_ORBITING:
+			if (AutopilotOrbiting())
+			{
+				delete ins;
+				autopilotQueue.erase(0);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+
 	switch (GetIntProperty(MOTION_TYPE))
 	{
 	case MOTION_NONE:
@@ -1954,6 +2088,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 		}
 		break;
 	}
+
 }
 
 
@@ -2067,7 +2202,7 @@ vector3d SpaceObject::GetXGravityAcceleration(vector3d location)
 
 
 //Breaking relative to distant-stars
-void SpaceObject::AutopilotOrbiting()
+bool SpaceObject::AutopilotOrbiting()
 {
 	
 	f64 requiredRelativeSpeed;
@@ -2108,9 +2243,10 @@ void SpaceObject::AutopilotOrbiting()
 
 		//debug: simple set speed to required value
 		//speed = requiredSpeed;
-		AutopilotSetSpeed(requiredSpeed);
+		return AutopilotSetSpeed(requiredSpeed);
 	}
 	delete gravInfo;//new in GamePhysics::GetGravityInfo
+	return true;
 }
 
 void SpaceObject::JumpToFTL(f64 ftlSpeed)
@@ -2141,6 +2277,20 @@ void SpaceObject::FallIntoStargate(SpaceObject* wormhole)
 {
 	wprintf(L"DG: %ws fall into %ws\r\n",this->GetName().c_str(),wormhole->GetName().c_str());
 	return;
+}
+
+void SpaceObject::AddAutopilot(AutopilotInstruction* instruction)
+{
+	autopilotQueue.push_back(instruction);
+}
+
+void SpaceObject::BreakAutopilot()
+{
+	for (u32 i = 0;i<autopilotQueue.size();i++)
+	{
+		delete autopilotQueue[i];
+	}
+	autopilotQueue.clear();
 }
 
 
@@ -3467,10 +3617,26 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		if(eventReceiver->IsKeyPressed(irr::KEY_F6))
 			gamePhysics->SetTimeSpeed(100000.0);
 
-		if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
-			playerShip->AutopilotBreak();
-		if (eventReceiver->IsKeyDown(irr::KEY_KEY_O))
-			playerShip->AutopilotOrbiting();
+		//if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
+		//	playerShip->AutopilotBreak();
+		if (eventReceiver->IsKeyPressed(irr::KEY_SPACE))
+		{
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_SETSPEED;
+			ins->vector1 = vector2d(0);
+			playerShip->AddAutopilot(ins);
+		}
+		//if (eventReceiver->IsKeyDown(irr::KEY_KEY_O))
+		//	playerShip->AutopilotOrbiting();
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_O))
+		{
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_ORBITING;
+			playerShip->AddAutopilot(ins);
+		}
+
+		if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
+			playerShip->BreakAutopilot();
 
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_K))
 			gameRoot->SaveGame();
@@ -3598,20 +3764,30 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			gamePhysics->DebugJumpToWormhole(0);
 
 		if(eventReceiver->IsKeyDown(irr::KEY_UP))
-			if (cameraDistanceDegree<6500)
-			{
-				cameraDistanceDegree+=frameDeltaTime*2000.0;
-				//cameraDistance *= 1.f*(1.f+frameDeltaTime);
-				UpdateCameraDistance();
-			}
+		{
+			cameraDistanceDegree+=frameDeltaTime*2000.0;
+			//cameraDistance *= 1.f*(1.f+frameDeltaTime);
+			UpdateCameraDistance();
+		}
 
 		if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
-			if (cameraDistanceDegree>-100)
-			{
-				//cameraDistance *= 1.f*(1.f-frameDeltaTime);
-				cameraDistanceDegree-=frameDeltaTime*2000.0;
-				UpdateCameraDistance();
-			}
+		{
+			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
+			cameraDistanceDegree-=frameDeltaTime*2000.0;
+			UpdateCameraDistance();
+		}
+
+		if(eventReceiver->IsKeyPressed((irr::EKEY_CODE)KEY_PSEUDO_MOUSEWHEELUP))
+		{
+			cameraDistanceDegree-=200;
+			UpdateCameraDistance();
+		}
+		if(eventReceiver->IsKeyPressed((irr::EKEY_CODE)KEY_PSEUDO_MOUSEWHEELDOWN))
+		{
+			cameraDistanceDegree+=200;
+			UpdateCameraDistance();
+		}
+
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_T))
 		{
 			playerShip->ScanSpace();
@@ -3677,6 +3853,25 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			}
 			typing=0;
 		}
+	}
+
+	vector2ds lastClick = eventReceiver->GetLastMouseClick();
+	if (lastClick.X>-1)
+	{
+		eventReceiver->RemoveLastMouseClick();
+		core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
+		f64 kfov = 2*tan(camera->getFOV()*0.5)*cameraDistance;
+		f64 x,y;
+		x = lastClick.X;
+		y = lastClick.Y;
+		//x /=screenSize.Width;
+		//y /=screenSize.Height;
+		x=kfov*((x-screenSize.Width*.5)/screenSize.Height)+playerShip->GetPosition().X;//-0.5 .. +0.5
+		y=playerShip->GetPosition().Y-kfov*(y/screenSize.Height-0.5);
+		wprintf(L" Mouse click: %f,%f\r\n",x,y);
+
+		playerShip->SetPosition(vector3d(x,y,0));//DEBUG!
+		
 	}
 
 	/*
@@ -3765,7 +3960,13 @@ void RealSpaceView::Close()
 
 void RealSpaceView::UpdateCameraDistance()
 {
+	if (cameraDistanceDegree<-100)
+		cameraDistanceDegree=-100;
+	if (cameraDistanceDegree>6500)
+		cameraDistanceDegree=6500;
+
 	cameraDistance = 30.0*exp(cameraDistanceDegree*0.003);
+
 	if (cameraDistance<50.0f)
 	{//modified mainly for wormholes
 		camera->setFarValue(100.f);
@@ -4086,26 +4287,25 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 	}
 	
 	if(eventReceiver->IsKeyDown(irr::KEY_UP))
-		//if (cameraDistanceDegree<8200) //estimated good to see ~10 LY in all directions
-		{
-			cameraDistanceDegree+=frameDeltaTime*2000.0;
+	//if (cameraDistanceDegree<8200) //estimated good to see ~10 LY in all directions
+	{
+		cameraDistanceDegree+=frameDeltaTime*2000.0;
 
-			//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
-			//gamePhysics->UpdateMapMarkers(mapScale);
-			UpdateCameraDistance();
-		}
+		//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+		//gamePhysics->UpdateMapMarkers(mapScale);
+		UpdateCameraDistance();
+	}
 
 	if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
-		if (cameraDistanceDegree>-180)//1 unit have size about whole screen
-		{
-			//cameraDistance *= 1.f*(1.f-frameDeltaTime);
-			cameraDistanceDegree-=frameDeltaTime*2000.0;
-			//UpdateCameraDistance();
-			//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
-			//gamePhysics->UpdateMapMarkers(mapScale);
-			UpdateCameraDistance();
+	{
+		//cameraDistance *= 1.f*(1.f-frameDeltaTime);
+		cameraDistanceDegree-=frameDeltaTime*2000.0;
+		//UpdateCameraDistance();
+		//f64 mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
+		//gamePhysics->UpdateMapMarkers(mapScale);
+		UpdateCameraDistance();
 
-		}
+	}
 	if (eventReceiver->IsKeyPressed(irr::KEY_NEXT))
 	{
 		if (cameraDistanceDegree>10000)
@@ -4175,6 +4375,18 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		UpdateCameraDistance();
 	}
 
+		if(eventReceiver->IsKeyPressed((irr::EKEY_CODE)KEY_PSEUDO_MOUSEWHEELUP))
+		{
+			cameraDistanceDegree-=200;
+			UpdateCameraDistance();
+		}
+		if(eventReceiver->IsKeyPressed((irr::EKEY_CODE)KEY_PSEUDO_MOUSEWHEELDOWN))
+		{
+			cameraDistanceDegree+=200;
+			UpdateCameraDistance();
+		}
+
+
 	text_string debug_text(L"Map scale: ");
 	debug_text += cameraDistanceDegree;
 	debug_text += L"\r\nGrid size: ";
@@ -4213,6 +4425,9 @@ void MapSpaceView::UpdateCameraDistance()
 	u32 i;
 	f64 gridScale;
 	vector2d gridShift;
+
+	if (cameraDistanceDegree<-180)//1 unit have size about whole screen
+		cameraDistanceDegree=-180;
 
 	//convert distance to scale
 	mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
