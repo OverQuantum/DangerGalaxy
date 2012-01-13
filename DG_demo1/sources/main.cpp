@@ -237,7 +237,7 @@ coding demo1:
 120111: CHG: autopilot breaking and orbiting is now in autopilot queue
 120112: ADD: mousewheel zoom on map is now centred on mouse
 120112: ADD: autopilot rotating
-120112: Adding: autopilot fly-to
+120113: ADD: autopilot fly-to (not very nice in strong grav field)
 
 
 DONE:
@@ -289,6 +289,7 @@ DONE:
 + stargate system : getting address
 + stargate system : address<->coord encryption
 + use mouse pointer to center on mouse-wheel zoom on map
++ autopiloting: autopliot fly-to by mouse click
 
 
 TODO:
@@ -296,10 +297,8 @@ TODO:
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - autopiloting
-  + mouse control
-  + getting RealSpace coords from mouse
-  - autopilot aiming
-  - autopliot speedup and slowdown
+  - autopliot fly-to by map click
+- autopliot FTL jump to mouse targeting
 - HyperSpace
 - weapons
   - firing plasma
@@ -883,7 +882,8 @@ class SpaceObject {
 		bool AutopilotOrbiting();//Setting to orbit
 		bool AutopilotSetSpeed(vector3d requiredSpeed);//Matching speed
 		bool AutopilotRotate(vector3d requiredDirection);//Aiming
-		bool AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
+		//bool AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
+		bool AutopilotFlyTo(AutopilotInstruction* instruction);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
 
 		void AddAutopilot(AutopilotInstruction* instruction);
 		void BreakAutopilot();
@@ -1531,6 +1531,7 @@ public:
 	vector2d vector2;
 	f64 value1;
 	f64 value2;
+	f64 value3;
 };
 
 //#########################################################################
@@ -1892,23 +1893,125 @@ bool SpaceObject::AutopilotSetSpeed(vector3d requiredSpeed)
 }
 
 //Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
-bool SpaceObject::AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed)
+//bool SpaceObject::AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed)
+bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 {
+	vector3d requiredLocation = vector3d(instruction->vector1.X,instruction->vector1.Y,0);
+	f64 requiredSpeed = instruction->value1;
+
 	f64 speedInDirection;
+	f64 maxThrust;
 	f64 distanceForDeceleration;
 	f64 distanceSQ;
-	f64 maxSpeed;
-	f64 maxThrust;
 	f64 timeDeceleration;
+	f64 timeRotate = 2.0;
+	f64 maxSpeed;
 	vector3d flyVector = requiredLocation-position;
 	vector3d flyDirection = flyVector;
+	distanceSQ = flyVector.getLengthSQ();
 	
 	flyDirection.normalize();
 	speedInDirection = flyDirection.dotProduct(speed);
-	maxThrust = GetFloatProperty(MAX_THRUST);
+	maxThrust = GetFloatProperty(MAX_THRUST)*0.8;
+
+	switch((u32)instruction->value3)
+	{
+	case 0:
+		//Out of fly course, recalc it
+
+		f64 D1;
+
+		D1 = 0.25*timeRotate*timeRotate + 0.5*(speedInDirection*speedInDirection+requiredSpeed*requiredSpeed)/(maxThrust*maxThrust) + sqrt(distanceSQ)/maxThrust;
+		if (D1<0)
+		{
+			//TODO: debug print info
+			wprintf(L" Autopilot fly-to, ailed to solve speed equation\r\n");
+			return true;//autopilot failed;
+		}
+		maxSpeed = maxThrust*(sqrt(D1)-0.5*timeRotate);
+		
+		if (maxSpeed>(LIGHTSPEED*.5))
+			maxSpeed=LIGHTSPEED*.5;
+
+		instruction->value2 = maxSpeed;//max speed
+		instruction->value3 = 1;//course calculated
+		AutopilotSetSpeed(flyDirection*maxSpeed);
+		break;
+	case 1:
+		//Accelerate
+		maxSpeed = instruction->value2;
+		if (AutopilotSetSpeed(flyDirection*maxSpeed))
+		{
+			//f64 time = sqrt(distanceSQ)/maxSpeed;
+			wprintf(L" Autopilot fly-to, speed reached, flying... ETA %.3f\r\n",sqrt(distanceSQ)/maxSpeed);
+			instruction->value3 = 2;
+		}
+		break;
+	case 2:
+		//Fly on course
+		if (AutopilotRotate(flyDirection))
+		{
+			maxSpeed = instruction->value2;
+			distanceForDeceleration = 0.5*(speedInDirection*speedInDirection - requiredSpeed*requiredSpeed)/maxThrust + timeRotate*maxSpeed;
+			if (distanceSQ<(distanceForDeceleration*distanceForDeceleration))
+			{
+				wprintf(L" Autopilot fly-to, deceleration...\r\n");
+				instruction->value3 = 3;//deceleration
+				/*if (maxSpeed > speedInDirection)
+					instruction->value2 = speedInDirection;*/
+			}
+		}
+		else
+		{
+			wprintf(L" Autopilot fly-to, course correction needed\r\n");
+			instruction->value3 = 0;//course should be recalculated
+			//TODO - 1 frame lost
+			return false;
+		}
+		break;
+	case 3:
+		//Time to decelerate
+		//maxSpeed = 0.8*sqrt(2.0*sqrt(distanceSQ)*maxThrust + requiredSpeed*requiredSpeed);
+		if (distanceSQ<1)
+		{
+			if (AutopilotSetSpeed(flyDirection*requiredSpeed))
+			{
+				wprintf(L" Autopilot fly-to finished\r\n");
+				return true;
+			}
+			return false;
+		}
+		else
+		{
+			AutopilotRotate(-flyDirection);
+
+			f64 k;
+			maxSpeed = instruction->value2;
+			distanceForDeceleration = 0.5*(speedInDirection*speedInDirection - requiredSpeed*requiredSpeed)/maxThrust + FRAME_TIME_MAX *10.0*maxSpeed;
+			k = sqrt(distanceSQ)/distanceForDeceleration;
+			if (k>0.99) k = 0.99;
+			AutopilotSetSpeed(flyDirection*maxSpeed*k);
+		}
+		break;
+	default:
+		break;
+
+	}
+
+	/*
+
+	if (instruction->value3!=0 && AutopilotRotate(flyDirection))
+	{
+
+	}
+	else
+	{
+	}*/
+	return false;
+
+	/*
 	timeDeceleration = speedInDirection/maxThrust + 2.0;//2 is time of rotate to backward
 	distanceForDeceleration = 0.5*maxThrust*timeDeceleration*timeDeceleration;
-	distanceSQ = flyVector.getLengthSQ();
 	if (distanceSQ>(distanceForDeceleration*distanceForDeceleration))
 	{
 		maxSpeed = 0.8*sqrt(2.0*sqrt(distanceSQ)*maxThrust);//-maxThrust*2.0;
@@ -1922,7 +2025,7 @@ bool SpaceObject::AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed)
 	{
 		flyDirection*=0.8*sqrt(2.0*sqrt(distanceSQ)*maxThrust);
 		return AutopilotSetSpeed(flyDirection);
-	}
+	}*/
 }
 
 
@@ -1965,7 +2068,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 			}
 			break;
 		case AutopilotInstruction::AP_FLY_TO:
-			if (AutopilotFlyTo(vector3d(ins->vector1.X,ins->vector1.Y,0),ins->value1))
+			if (AutopilotFlyTo(ins))
 			{
 				delete ins;
 				autopilotQueue.erase(0);
@@ -2344,6 +2447,9 @@ void SpaceObject::AddAutopilot(AutopilotInstruction* instruction)
 
 void SpaceObject::BreakAutopilot()
 {
+	if (autopilotQueue.size()>0)
+		wprintf(L" Removed %i autopilot instructions\r\n",autopilotQueue.size());
+
 	for (u32 i = 0;i<autopilotQueue.size();i++)
 	{
 		delete autopilotQueue[i];
@@ -2853,6 +2959,7 @@ void GamePhysics::CheckCollisions(SpaceObject* object)
 				//projectedDistance = curVector.dotProduct(wormholeDirection);
 				if (curVector.dotProduct(wormholeNormale)*prevVector.dotProduct(wormholeNormale)<0)
 				{
+					object->BreakAutopilot();
 					object->FallIntoWormhole(listObjects[i]);
 					return;//no more collisions expected
 				}
@@ -2881,6 +2988,7 @@ void GamePhysics::CheckCollisions(SpaceObject* object)
 						object->SetSpeed(object->GetSpeed()-2.0*perpendicularSpeed*stargateNormale);
 						continue; //no more collisions expected
 					}
+					object->BreakAutopilot();
 					object->FallIntoStargate(listObjects[i]);
 					return;//no more collisions expected
 				}
@@ -3926,14 +4034,16 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		//y /=screenSize.Height;
 		x=kfov*((x-screenSize.Width*.5)/screenSize.Height)+playerShip->GetPosition().X;//-0.5 .. +0.5
 		y=playerShip->GetPosition().Y-kfov*(y/screenSize.Height-0.5);
-		wprintf(L" Mouse click: %f,%f\r\n",x,y);
+		wprintf(L" Autopilot fly to: %f,%f\r\n",x,y);
 
 		//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
 
 		AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
 		ins->instruction = AutopilotInstruction::AP_FLY_TO;
 		ins->vector1 = vector2d(x,y);
-		ins->value1 = 0;//temp
+		ins->value1 = 0;//speed, 0 is temprorary
+		ins->value2 = 0;//maxspeed = 0
+		ins->value3 = 0;//phase = 0
 		playerShip->AddAutopilot(ins);
 
 		
