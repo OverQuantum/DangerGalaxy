@@ -238,6 +238,14 @@ coding demo1:
 120112: ADD: mousewheel zoom on map is now centred on mouse
 120112: ADD: autopilot rotating
 120113: ADD: autopilot fly-to (not very nice in strong grav field)
+120114: CHG: switch view is now by current status of playership
+120114: ADD: autopilot FTL jump by mouse click, including map
+120114: CHG: FTL is now have remaining-time
+120114: ADD: autopilot fly-to by mouse click on map
+120114: ADD: display ETA for fly-to autopilot
+120114: ADD: text info for FTL
+120114: ADD: display FTL remaining time
+120114: ADD: timespeed control on FTL 
 
 
 DONE:
@@ -290,6 +298,8 @@ DONE:
 + stargate system : address<->coord encryption
 + use mouse pointer to center on mouse-wheel zoom on map
 + autopiloting: autopliot fly-to by mouse click
++ autopliot FTL jump to mouse targeting
++ autopilot fly-to by map click
 
 
 TODO:
@@ -297,8 +307,7 @@ TODO:
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - autopiloting
-  - autopliot fly-to by map click
-- autopliot FTL jump to mouse targeting
+  - autopilot go-to-orbit-at-that-point
 - HyperSpace
 - weapons
   - firing plasma
@@ -406,6 +415,8 @@ L - load saved game
 K - save game
 Y - type and send stargate address
 T - scan space (to get stargate address and so on)
+MouseClick Left - autopilot fly-to
+MouseClick Right - autopilot FTL-to
 X - (DEBUG) dump galaxy coordinates into log
 J - (DEBUG) teleport to wormhole with direction, closest to direction of the ship
 H - (DEBUG) teleport to random wormhole and slow fall into
@@ -415,9 +426,12 @@ W/A/S/D - pan
 Up/Down - zoom
 MouseWheel - zoom, center on mouse
 PgUp/PgDn - zoom in/out by big steps
+MouseClick Left - autopilot fly-to
+MouseClick Right - autopilot FTL-to (started after closing map)
 Esc - back to RealSpace
 
 CONTROL on FTL:
+F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
 Esc - drop out to RealSpace
 X - (DEBUG) dump galaxy coordinates into log
 
@@ -714,6 +728,7 @@ public:
 
 	vector2ds GetMousePosition() {return MouseState.Position;}
 	vector2ds GetLastMouseClick() {return MouseState.LastClick;}
+	u32 GetLastMouseClickButtons() {return MouseState.LastClickButtons;}
 	void RemoveLastMouseClick() {MouseState.LastClick = vector2ds(-1);}
 
 	//void CleanKeyStatus(EKEY_CODE keyCode) {KeyIsDown[keyCode]=false;}
@@ -833,6 +848,7 @@ class SpaceObject {
 			PROCESS_START_TIME,  //Time, when current proccess started
 
 			MAX_FTL_GRAVITY,     //Max acceleration for FTL possible
+			FTL_REMAINING_TIME,  //Time, left for flying on FTL
 
 			MARKER_SIZE,         //Size of marker on map
 
@@ -859,6 +875,7 @@ class SpaceObject {
 		vector3d GetDirection();
 		text_string GetName() {return name;}
 		SceneNode* GetNode() {return sceneNode;}
+		text_string GetAutopilotInfo();
 
 		//Setters
 		void SetPosition(vector3d newPos) {position = newPos; prevPosition = newPos;}
@@ -884,6 +901,7 @@ class SpaceObject {
 		bool AutopilotRotate(vector3d requiredDirection);//Aiming
 		//bool AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
 		bool AutopilotFlyTo(AutopilotInstruction* instruction);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
+		bool AutopilotFTLTo(AutopilotInstruction* instruction, f64 frameTime);//FTL to location
 
 		void AddAutopilot(AutopilotInstruction* instruction);
 		void BreakAutopilot();
@@ -896,6 +914,7 @@ class SpaceObject {
 
 		//updating
 		void UpdatePhysics(f64 time);
+		void UpdateMotionOnFTL(f64 time);
 		void UpdateSceneNode();
 		void UpdateSceneNode(SpaceObject* centerSceneObject);
 		void UpdateMarkerNode(f64 cameraDistance);
@@ -998,42 +1017,6 @@ class GamePhysics {
 
 };
 
-//ResourceManager - manage game resources
-class ResourceManager
-{
-	public:
-		void Setup(IrrlichtDevice* newDevice, scene::ISceneManager* newSceneManager, video::IVideoDriver* newVideoDriver, MyEventReceiver* newEventReceiver, GamePhysics* newPhysics);
-		void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
-
-		IrrlichtDevice* GetDevice() {return device;}
-		video::IVideoDriver* GetVideoDriver() {return videoDriver;}
-		MyEventReceiver* GetEventReceiver() {return eventReceiver;}
-
-		//void MakeSimpleSystem();
-		void MakeBackground();
-		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
-		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
-		SpaceObject* MakeBarycenter();
-		SpaceObject* MakeWormhole();
-		SpaceObject* MakeStargate();
-		SpaceObject* MakeShip();
-		SpaceObject* LoadNodesForShip(SpaceObject* ship);
-		void AddMarker(SpaceObject* toObject, u32 type);
-
-		SceneNode* NewShipNode();
-
-		gui::IGUIStaticText* getSimpleText() {return simpleTextToDisplay;}
-
-	private:
-		gui::IGUIStaticText* simpleTextToDisplay;
-		GamePhysics* physics;
-
-		IrrlichtDevice* device;
-		scene::ISceneManager* sceneManager;
-		video::IVideoDriver* videoDriver;
-		MyEventReceiver* eventReceiver;
-};
-
 //DG_Game - game root, hold everything else
 class DG_Game {
 
@@ -1095,12 +1078,58 @@ class DG_Game {
 		FTLView* FTLSpace;
 		QuasiSpaceView* QuasiSpace;
 
+		SpaceObject::MotionType prevPlayerMotion;
+
 		core::array<ViewType*> viewStack;
 		GameView* activeView;
 
 		void InternalAcviateView(ViewType newView);
 
 };
+
+//ResourceManager - manage game resources
+class ResourceManager
+{
+	public:
+		void Setup(IrrlichtDevice* newDevice, scene::ISceneManager* newSceneManager, video::IVideoDriver* newVideoDriver, MyEventReceiver* newEventReceiver, GamePhysics* newPhysics);
+		void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
+
+		IrrlichtDevice* GetDevice() {return device;}
+		video::IVideoDriver* GetVideoDriver() {return videoDriver;}
+		MyEventReceiver* GetEventReceiver() {return eventReceiver;}
+		gui::IGUITab* GetHUD(DG_Game::ViewType view);
+
+		//void MakeSimpleSystem();
+		void MakeBackground();
+		SpaceObject* MakeStar(f64 radius = 10.0, s32 polygons = 32);
+		SpaceObject* MakePlanet(f64 radius = 3.0, s32 polygons = 32);
+		SpaceObject* MakeBarycenter();
+		SpaceObject* MakeWormhole();
+		SpaceObject* MakeStargate();
+		SpaceObject* MakeShip();
+		SpaceObject* LoadNodesForShip(SpaceObject* ship);
+		void AddMarker(SpaceObject* toObject, u32 type);
+		void ActivateHUD(DG_Game::ViewType view);
+
+		SceneNode* NewShipNode();
+
+		//gui::IGUIStaticText* getSimpleText() {return simpleTextToDisplay;}
+
+	private:
+		//gui::IGUIStaticText* simpleTextToDisplay;
+		GamePhysics* physics;
+
+		IrrlichtDevice* device;
+		scene::ISceneManager* sceneManager;
+		video::IVideoDriver* videoDriver;
+		MyEventReceiver* eventReceiver;
+
+		gui::IGUITab* RealSpace_HUD;
+		gui::IGUITab* Map_HUD;
+		gui::IGUITab* FTL_HUD;
+		gui::IGUITab* QuasiSpace_HUD;
+};
+
 
 //GameView - interface-like class for different game views
 class GameView
@@ -1125,6 +1154,7 @@ protected:
 	scene::ISceneManager* sceneManager;
 	video::IVideoDriver* videoDriver;
 	ResourceManager* resourceManager;
+	gui::IGUITab* viewHUD;
 };
 
 //RealSpaceView - to render RealSpace
@@ -1134,6 +1164,7 @@ public:
 	RealSpaceView();
 
 	void Init();
+	void ReInit();
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
@@ -1228,6 +1259,7 @@ private:
 	PlayerShip* playerShip;
 	SceneNode* playerShipNode;
 	scene::ICameraSceneNode* camera;
+	gui::IGUIStaticText* simpleTextToDisplay;
 };
 
 //QuasiSpaceView - to render fly in QuasiSpace of PlusMinus
@@ -1523,15 +1555,21 @@ public:
 		AP_SETSPEED,        //Set speed to desired value, params: vector1 is required speed
 		AP_ORBITING,        //Set speed to orbit max-gravity object, params: none
 		AP_FLY_TO,          //Fly to specific location, params: vector1 is required location, value1 is required speed
-		AP_FTL_TIMER,       //FTL jump for specific time, params: value1 is time 
+		//AP_FTL_TIMER,       //FTL jump for specific time, params: value1 is time 
+		AP_FTL_TO,          //FTL fly to specific location, params: vector1 is required location (galaxy coordinates)
 	};
 
+	AutopilotInstruction() {prepareText = false;}
+
 	AutopilotType instruction;
+	bool prepareText;
+	u32 phase;//phase, for multi-phase autopiloting
 	vector2d vector1;
 	vector2d vector2;
 	f64 value1;
 	f64 value2;
 	f64 value3;
+	text_string textInfo;
 };
 
 //#########################################################################
@@ -1688,6 +1726,8 @@ SpaceObject::SpaceObject()
 	SetFloatProperty(ORBITAL_EPOCH_PHASE,0);
 	SetFloatProperty(ROTATION_SPEED,0);
 	SetFloatProperty(MAX_FTL_GRAVITY,0.003);
+	SetFloatProperty(FTL_REMAINING_TIME,0);
+
 }
 
 SpaceObject::~SpaceObject()
@@ -1903,7 +1943,6 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 	f64 maxThrust;
 	f64 distanceForDeceleration;
 	f64 distanceSQ;
-	f64 timeDeceleration;
 	f64 timeRotate = 2.0;
 	f64 maxSpeed;
 	vector3d flyVector = requiredLocation-position;
@@ -1914,7 +1953,7 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 	speedInDirection = flyDirection.dotProduct(speed);
 	maxThrust = GetFloatProperty(MAX_THRUST)*0.8;
 
-	switch((u32)instruction->value3)
+	switch(instruction->phase)
 	{
 	case 0:
 		//Out of fly course, recalc it
@@ -1924,8 +1963,8 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 		D1 = 0.25*timeRotate*timeRotate + 0.5*(speedInDirection*speedInDirection+requiredSpeed*requiredSpeed)/(maxThrust*maxThrust) + sqrt(distanceSQ)/maxThrust;
 		if (D1<0)
 		{
-			//TODO: debug print info
-			wprintf(L" Autopilot fly-to, ailed to solve speed equation\r\n");
+			//Should not happens ever, as D1 have only positive components
+			wprintf(L" Autopilot fly-to, failed to solve speed equation\r\n");
 			return true;//autopilot failed;
 		}
 		maxSpeed = maxThrust*(sqrt(D1)-0.5*timeRotate);
@@ -1933,8 +1972,14 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 		if (maxSpeed>(LIGHTSPEED*.5))
 			maxSpeed=LIGHTSPEED*.5;
 
+		if (instruction->prepareText)
+		{
+			instruction->textInfo = L"Autopilot accelerating... ETA: ";
+			instruction->textInfo += print_f64(sqrt(distanceSQ)/maxSpeed,L"%.03f");
+		}
+
 		instruction->value2 = maxSpeed;//max speed
-		instruction->value3 = 1;//course calculated
+		instruction->phase = 1;//course calculated
 		AutopilotSetSpeed(flyDirection*maxSpeed);
 		break;
 	case 1:
@@ -1942,9 +1987,14 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 		maxSpeed = instruction->value2;
 		if (AutopilotSetSpeed(flyDirection*maxSpeed))
 		{
-			//f64 time = sqrt(distanceSQ)/maxSpeed;
-			wprintf(L" Autopilot fly-to, speed reached, flying... ETA %.3f\r\n",sqrt(distanceSQ)/maxSpeed);
-			instruction->value3 = 2;
+			f64 time = sqrt(distanceSQ)/maxSpeed;
+			//wprintf(L" Autopilot fly-to, speed reached, flying... ETA %.3f\r\n",time);
+			if (instruction->prepareText)
+			{
+				instruction->textInfo = L"Autopilot fly... ETA: ";
+				instruction->textInfo += print_f64(time,L"%.03f");
+			}
+			instruction->phase = 2;
 		}
 		break;
 	case 2:
@@ -1955,16 +2005,26 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 			distanceForDeceleration = 0.5*(speedInDirection*speedInDirection - requiredSpeed*requiredSpeed)/maxThrust + timeRotate*maxSpeed;
 			if (distanceSQ<(distanceForDeceleration*distanceForDeceleration))
 			{
-				wprintf(L" Autopilot fly-to, deceleration...\r\n");
-				instruction->value3 = 3;//deceleration
+				//wprintf(L" Autopilot fly-to, deceleration...\r\n");
+				if (instruction->prepareText)
+				{
+					instruction->textInfo = L"Autopilot deceleration...";
+				}
+				instruction->phase = 3;//deceleration
 				/*if (maxSpeed > speedInDirection)
 					instruction->value2 = speedInDirection;*/
+			}
+			else
+			if (instruction->prepareText)
+			{
+				instruction->textInfo = L"Autopilot fly... ETA: ";
+				instruction->textInfo += print_f64(sqrt(distanceSQ)/maxSpeed,L"%.01f");
 			}
 		}
 		else
 		{
-			wprintf(L" Autopilot fly-to, course correction needed\r\n");
-			instruction->value3 = 0;//course should be recalculated
+			//wprintf(L" Autopilot fly-to, course correction needed\r\n");
+			instruction->phase = 0;//course should be recalculated
 			//TODO - 1 frame lost
 			return false;
 		}
@@ -1976,7 +2036,7 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 		{
 			if (AutopilotSetSpeed(flyDirection*requiredSpeed))
 			{
-				wprintf(L" Autopilot fly-to finished\r\n");
+				//wprintf(L" Autopilot fly-to finished\r\n");
 				return true;
 			}
 			return false;
@@ -2028,6 +2088,86 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 	}*/
 }
 
+bool SpaceObject::AutopilotFTLTo(AutopilotInstruction* instruction, f64 frameTime)
+{
+	switch(instruction->phase)
+	{
+	case 0:
+		{
+			vector2d loc = instruction->vector1-physics->GetGalaxyCoordinatesOfCenter();
+			loc*=LIGHTYEAR;
+			vector3d requiredLocation = vector3d(loc.X,loc.Y,0);
+			vector3d flyVector = requiredLocation-position;
+			if (AutopilotRotate(flyVector))
+			{
+				if (physics->IsFTLPossible(position,GetFloatProperty(SpaceObject::MAX_FTL_GRAVITY)))
+				{
+					instruction->value1 = flyVector.getLength()/(LIGHTSPEED*3000.0);//remaining time
+					SetFloatProperty(FTL_REMAINING_TIME,instruction->value1);
+
+					JumpToFTL(3000.0);
+					//physics->GetRoot()->SwitchView(DG_Game::VIEW_FTL);
+					instruction->phase = 1;
+					//wprintf(L" Autopilot FTL, jumping, ETA: %.6f, finished\r\n",instruction->value1);
+				}
+				else
+				{
+					wprintf(L" Autopilot FTL, FTL is not possible, aborted\r\n");
+					return true;
+				}
+			}
+		}
+		break;
+	case 1:
+		if (GetIntProperty(MOTION_TYPE)==MOTION_FTL)
+		{
+			//Set speed at FTL more accurate
+			vector2d loc = instruction->vector1-physics->GetGalaxyCoordinatesOfCenter();
+			loc*=LIGHTYEAR;
+			vector3d requiredLocation = vector3d(loc.X,loc.Y,0);
+			vector3d flyVector = requiredLocation-position;
+			f64 distance = flyVector.getLength();
+			instruction->value1 = distance/(LIGHTSPEED*3000.0);//remaining time
+			speed = flyVector*(LIGHTSPEED*3000.0/distance);
+			//instruction->phase = 2;
+			SetFloatProperty(FTL_REMAINING_TIME,instruction->value1);
+			//instruction->value1-=frameTime;
+			//wprintf(L" Autopilot FTL, jumped, timer is set, finished\r\n");
+			return true;
+		}
+		else
+		{
+			//not jumped (only while jumptoftl is instant) or made it in one frame
+			/*if (GetFloatProperty(FTL_REMAINING_TIME)>0)
+			{
+				//not jumped - only while jumptoftl is instant
+				wprintf(L" Autopilot FTL, failed to jump to FTL, aborted\r\n");
+			}*/
+			return true;
+		}
+		break;
+	/*case 2:
+		{
+			if (GetIntProperty(MOTION_TYPE)!=MOTION_FTL)
+			{
+				wprintf(L" Autopilot FTL breaked due to jumpout\r\n");
+				return true;
+			}
+			if (instruction->value1<frameTime)
+			{
+				UpdateMotionOnFTL(instruction->value1);
+				wprintf(L" Autopilot FTL finished\r\n");
+				BreakFTL(100.0);
+				return true;
+			}
+			instruction->value1-=frameTime;
+			return false;
+		}*/
+	default:
+		break;
+	}
+	return false;
+}
 
 void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 {
@@ -2040,6 +2180,41 @@ void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 		//sceneMarkerNode->setB
 		//sceneNode->setScale(vector3d(scale,scale,scale));
 	}
+}
+
+void SpaceObject::UpdateMotionOnFTL(f64 time)
+{
+	bool breakFlag=false;
+	f64 time2 = GetFloatProperty(FTL_REMAINING_TIME);
+	if (time2>time)
+		time2 = time;
+	else
+		breakFlag = true;
+	vector3d position2 = position + speed*time2;
+	AddFloatProperty(FTL_REMAINING_TIME,-time2);
+	InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2,GetFloatProperty(MAX_FTL_GRAVITY));
+	if (checkFTL->breaked)
+	{
+		position = checkFTL->breakPoint;
+		//motionType = MOTION_NAVIGATION;
+		SetIntProperty(MOTION_TYPE,MOTION_NAVIGATION);
+		BreakFTL(10.0);
+		wprintf(L"Drop out from FTL due to high gravity\r\n");
+		breakFlag = false;
+	}
+	else
+	{
+		position = position2;
+	}
+	if (breakFlag)
+	{
+		wprintf(L"Exit from FTL by timer\r\n");
+		BreakFTL(100.0);
+	}
+	delete checkFTL; //new in CheckFTLBreak()
+
+	//if (!(physics->IsFTLPossible(position)))
+	//	motionType = MOTION_NAVIGATION;
 }
 
 void SpaceObject::UpdatePhysics(f64 time)
@@ -2069,6 +2244,13 @@ void SpaceObject::UpdatePhysics(f64 time)
 			break;
 		case AutopilotInstruction::AP_FLY_TO:
 			if (AutopilotFlyTo(ins))
+			{
+				delete ins;
+				autopilotQueue.erase(0);
+			}
+			break;
+		case AutopilotInstruction::AP_FTL_TO:
+			if (AutopilotFTLTo(ins,time))
 			{
 				delete ins;
 				autopilotQueue.erase(0);
@@ -2175,24 +2357,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 		}
 		break;
 	case MOTION_FTL:
-		{
-			vector3d position2 = position + speed*time;
-			InfoFTL* checkFTL = physics->CheckFTLBreak(position,position2,GetFloatProperty(MAX_FTL_GRAVITY));
-			if (checkFTL->breaked)
-			{
-				position = checkFTL->breakPoint;
-				//motionType = MOTION_NAVIGATION;
-				SetIntProperty(MOTION_TYPE,MOTION_NAVIGATION);
-			}
-			else
-			{
-				position = position2;
-			}
-			delete checkFTL; //new in CheckFTLBreak()
-
-			//if (!(physics->IsFTLPossible(position)))
-			//	motionType = MOTION_NAVIGATION;
-		}
+		UpdateMotionOnFTL(time);
 		break;
 	case MOTION_PLUSMINUS:
 		{
@@ -2455,6 +2620,15 @@ void SpaceObject::BreakAutopilot()
 		delete autopilotQueue[i];
 	}
 	autopilotQueue.clear();
+}
+
+text_string SpaceObject::GetAutopilotInfo()
+{
+	if (autopilotQueue.size()>0)
+		if (autopilotQueue[0]->prepareText)
+			if (autopilotQueue[0]->textInfo!=0)
+				return autopilotQueue[0]->textInfo;
+	return L"";
 }
 
 
@@ -3196,9 +3370,12 @@ void ResourceManager::Setup(IrrlichtDevice* newDevice, scene::ISceneManager* new
 
 	newDevice->getGUIEnvironment()->clear();
 
-	simpleTextToDisplay = newDevice->getGUIEnvironment()->addStaticText(
-		L"Diagnostic very-very-very-very-very-very-very-very-long\r\nSecond line", core::rect<s32>(5, 5, 400, 200));
-	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 255, 0));
+	FTL_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,1);
+	RealSpace_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,2);
+	Map_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,3);
+	QuasiSpace_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,4);
+
+	//RealSpace_HUD->setVisible(false);
 
 }
 
@@ -3552,6 +3729,34 @@ void ResourceManager::AddMarker(SpaceObject* toObject, u32 type)
 	toObject->SetMarkerNode(sceneNode2,sizeMarker);
 }
 
+gui::IGUITab* ResourceManager::GetHUD(DG_Game::ViewType view)
+{
+	switch(view)
+	{
+	case DG_Game::VIEW_FTL:
+		return FTL_HUD;
+	case DG_Game::VIEW_QUASISPACE:
+		return QuasiSpace_HUD;
+	case DG_Game::VIEW_REALSPACE:
+		return RealSpace_HUD;
+	case DG_Game::VIEW_SECTOR_MAP:
+		return Map_HUD;
+	default:
+		return 0;
+	}
+
+}
+
+void ResourceManager::ActivateHUD(DG_Game::ViewType view)
+{
+	RealSpace_HUD->setVisible(view==DG_Game::VIEW_REALSPACE);
+	Map_HUD->setVisible(view==DG_Game::VIEW_SECTOR_MAP);
+	FTL_HUD->setVisible(view==DG_Game::VIEW_FTL);
+	QuasiSpace_HUD->setVisible(view==DG_Game::VIEW_QUASISPACE);
+	return;
+}
+
+
 //#########################################################################
 //GameView
 
@@ -3600,9 +3805,8 @@ void RealSpaceView::Init()
 	device = resourceManager->GetDevice();
 	eventReceiver = resourceManager->GetEventReceiver();
 
-	resourceManager->SetSceneManager(sceneManager);
+	viewHUD = resourceManager->GetHUD(DG_Game::VIEW_REALSPACE);
 	
-	sceneManager->clear();
 	
 	// create a particle system
 
@@ -3635,24 +3839,6 @@ void RealSpaceView::Init()
 	motionIndicator->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire.bmp"));
 	motionIndicator->setMaterialType(video::EMT_TRANSPARENT_VERTEX_ALPHA);
 	*/
-	resourceManager->LoadNodesForShip((SpaceObject*)playerShip);
-
-	playerShipThrust = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/thrust1.irrmesh"));
-	if (playerShipThrust)
-	{
-		playerShipThrust->setScale(core::vector3df(1.f));
-		/*playerShipThrust->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire1.bmp"));
-		playerShipThrust->setMaterialFlag(video::EMF_LIGHTING, false);
-		playerShipThrust->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
-		playerShipThrust->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR);*/
-		playerShipThrust->setParent(playerShip->GetNode());
-		playerShipThrust->setPosition(vector3df(-0.45f,0.f,-0.1f));
-		playerShipThrust->setScale(vector3df(2.0f,0.5f,1.0f));
-		playerShipThrust->setVisible(false);
-	}
-
-
-
 
 
 	/*
@@ -3700,9 +3886,6 @@ void RealSpaceView::Init()
 
 	//playerThrust = 1.0;
 
-	camera = sceneManager->addCameraSceneNode();
-	camera->setFOV(.7f);//field-of-view
-	camera->setTarget(vector3df(0));//update camera look-at point
 
 	//device->getCursorControl()->setVisible(false);
 
@@ -3715,15 +3898,50 @@ void RealSpaceView::Init()
 		driver->getTexture(RESOURCE_PATH"/ships.png"),//irrlichtlogoalpha2.tga"),
 		core::position2d<s32>(10,20));*/
 
-	simpleTextToDisplay = resourceManager->getSimpleText();
+	//simpleTextToDisplay = resourceManager->getSimpleText();
+	simpleTextToDisplay = device->getGUIEnvironment()->addStaticText(
+		L"Diagnostic very-very-very-very-very-very-very-very-long 1\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
+	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 255, 0));
+
 	/**/
 
 	// This is the movemen speed in units per second.
 	//MOVEMENT_SPEED = 5.0;
 
+	ReInit();
+
+}
+
+void RealSpaceView::ReInit()
+{
+	resourceManager->SetSceneManager(sceneManager);
+	sceneManager->clear();
+
+	resourceManager->LoadNodesForShip((SpaceObject*)playerShip);
+
+	playerShipThrust = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/thrust1.irrmesh"));
+	if (playerShipThrust)
+	{
+		playerShipThrust->setScale(core::vector3df(1.f));
+		/*playerShipThrust->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/fire1.bmp"));
+		playerShipThrust->setMaterialFlag(video::EMF_LIGHTING, false);
+		playerShipThrust->setMaterialFlag(video::EMF_ZWRITE_ENABLE, false);
+		playerShipThrust->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR);*/
+		playerShipThrust->setParent(playerShip->GetNode());
+		playerShipThrust->setPosition(vector3df(-0.45f,0.f,-0.1f));
+		playerShipThrust->setScale(vector3df(2.0f,0.5f,1.0f));
+		playerShipThrust->setVisible(false);
+	}
+
+	camera = sceneManager->addCameraSceneNode();
+	camera->setFOV(.7f);//field-of-view
+	camera->setTarget(vector3df(0));//update camera look-at point
+
 	cameraDistanceDegree = 1000.0;
 	UpdateCameraDistance();
+
 }
+
 
 void RealSpaceView::Activate()
 {
@@ -3846,10 +4064,11 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		{
 			if (gamePhysics->IsFTLPossible(playerShip->GetPosition(),playerShip->GetFloatProperty(SpaceObject::MAX_FTL_GRAVITY)))
 			{
+				playerShip->SetFloatProperty(SpaceObject::FTL_REMAINING_TIME,100000000.0);//about a 3 years
 				playerShip->JumpToFTL(3000.0);
 				DisplayMessage(L"Jump to FTL");
 				//gameRoot->ActivateFTL();
-				gameRoot->SwitchView(DG_Game::VIEW_FTL);
+				//gameRoot->SwitchView(DG_Game::VIEW_FTL);
 
 			}
 			else
@@ -3898,7 +4117,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 				gamePhysics->GoInterstellar();
 				gameRoot->GoInterstellar();
 
-				gameRoot->SwitchView(DG_Game::VIEW_QUASISPACE);
+				//gameRoot->SwitchView(DG_Game::VIEW_QUASISPACE);
 			}
 			else
 			{
@@ -4034,19 +4253,40 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		//y /=screenSize.Height;
 		x=kfov*((x-screenSize.Width*.5)/screenSize.Height)+playerShip->GetPosition().X;//-0.5 .. +0.5
 		y=playerShip->GetPosition().Y-kfov*(y/screenSize.Height-0.5);
-		wprintf(L" Autopilot fly to: %f,%f\r\n",x,y);
 
-		//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
+		u32 buttons = eventReceiver->GetLastMouseClickButtons();
 
-		AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
-		ins->instruction = AutopilotInstruction::AP_FLY_TO;
-		ins->vector1 = vector2d(x,y);
-		ins->value1 = 0;//speed, 0 is temprorary
-		ins->value2 = 0;//maxspeed = 0
-		ins->value3 = 0;//phase = 0
-		playerShip->AddAutopilot(ins);
+		if (buttons&1)
+		{
+			wprintf(L" Autopilot fly to: %f,%f\r\n",x,y);
 
-		
+			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_FLY_TO;
+			ins->prepareText = true;
+			ins->textInfo = L"";
+			ins->vector1 = vector2d(x,y);
+			ins->value1 = 0;//speed, 0 is temprorary
+			ins->value2 = 0;//maxspeed = 0
+			ins->phase = 0;
+			playerShip->AddAutopilot(ins);
+		}
+		else if (buttons&2)
+		{
+			vector2d destination = vector2d(x,y);
+			destination /=LIGHTYEAR;
+			destination += gamePhysics->GetGalaxyCoordinatesOfCenter();
+			//x+=phy
+			wprintf(L" Autopilot FTL to: %f,%f\r\n",destination.X,destination.Y);
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_FTL_TO;
+			ins->vector1 = destination;//vector2d(x,y);
+			ins->phase = 0;
+			playerShip->AddAutopilot(ins);
+		}
+	
 	}
 
 	/*
@@ -4107,6 +4347,8 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		debug_text += L" c; ";
 		debug_text += L"\r\n";
 		debug_text += gravInfo->print();
+		debug_text += L"\r\n";
+		debug_text += playerShip->GetAutopilotInfo();
 		simpleTextToDisplay->setText(debug_text.c_str());
 	
 		delete gravInfo;//new in GamePhysics::GetGravityInfo
@@ -4372,7 +4614,12 @@ void MapSpaceView::Init()
 	device = resourceManager->GetDevice();
 	eventReceiver = resourceManager->GetEventReceiver();
 	centerOfMap = vector2d(0);
-	simpleTextToDisplay = resourceManager->getSimpleText();
+	viewHUD = resourceManager->GetHUD(DG_Game::VIEW_SECTOR_MAP);
+
+	//simpleTextToDisplay = resourceManager->getSimpleText();
+	simpleTextToDisplay = device->getGUIEnvironment()->addStaticText(
+		L"Diagnostic very-very-very-very-very-very-very-very-long 2\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
+	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 255, 0));
 }
 
 void MapSpaceView::Activate()
@@ -4556,11 +4803,46 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		eventReceiver->RemoveLastMouseClick();
 		core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
 		f64 kfov = tan(camera->getFOV()*0.5)*200/mapScale;//200 = 2 * 100, 100 is cameradistance
-		vector2d clickPos = centerOfMap + shiftToGalaxy;
+		vector2d clickPos = centerOfMap;
 		clickPos.X+=kfov*((((f64)lastClick.X)-screenSize.Width*.5)/screenSize.Height);//-0.5 .. +0.5
 		clickPos.Y-=kfov*(((f64)lastClick.Y)/screenSize.Height-0.5);
-		clickPos/=LIGHTYEAR;
-		wprintf(L" Mouse click on map: (%.10f,%.10f)\r\n",clickPos.X,clickPos.Y);
+
+		u32 buttons = eventReceiver->GetLastMouseClickButtons();
+
+		if (buttons&1)
+		{
+			wprintf(L" Autopilot fly to: %f,%f\r\n",clickPos.X,clickPos.Y);
+
+			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_FLY_TO;
+			ins->prepareText = true;
+			ins->textInfo = L"";
+			ins->vector1 = clickPos;
+			ins->value1 = 0;//speed, 0 is temprorary
+			ins->value2 = 0;//maxspeed = 0
+			ins->phase = 0;
+			gameRoot->GetPlayerShip()->AddAutopilot(ins);
+		}
+		else if (buttons&2)
+		{
+			clickPos += shiftToGalaxy;
+			clickPos/=LIGHTYEAR;
+			wprintf(L" Autopilot FTL to: %f,%f\r\n",clickPos.X,clickPos.Y);
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_FTL_TO;
+			ins->vector1 = clickPos;
+			ins->phase = 0;
+			gameRoot->GetPlayerShip()->AddAutopilot(ins);
+		}
+		else
+		{
+			clickPos += shiftToGalaxy;
+			clickPos/=LIGHTYEAR;
+			wprintf(L" Mouse click on map: (%.10f,%.10f)\r\n",clickPos.X,clickPos.Y);
+		}
 	}
 
 
@@ -4619,7 +4901,7 @@ UpdateCameraForMouseWheel:
 
 	//TODO: use resourceManager to render?
 	//videoDriver->beginScene(true, true, video::SColor(255,20,20,20));
-		videoDriver->beginScene(true, true, video::SColor(255,0,0,0));
+	videoDriver->beginScene(true, true, video::SColor(255,0,0,0));
 	sceneManager->drawAll();
 	device->getGUIEnvironment()->drawAll();
 	videoDriver->endScene();
@@ -4715,8 +4997,9 @@ void FTLView::Init()
 	resourceManager = gameRoot->GetResourceManager();
 
 	videoDriver = resourceManager->GetVideoDriver();
-	//device = resourceManager->GetDevice();
+	device = resourceManager->GetDevice();
 	eventReceiver = resourceManager->GetEventReceiver();
+	viewHUD = resourceManager->GetHUD(DG_Game::VIEW_FTL);
 
 	sceneManager->clear();
 
@@ -4742,6 +5025,10 @@ void FTLView::Init()
 		camera->setFOV(0.7f);
 	}
 
+	simpleTextToDisplay = device->getGUIEnvironment()->addStaticText(
+		L"Diagnostic very-very-very-very-very-very-very-very-long 3\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
+	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 0, 0));
+
 }
 
 void FTLView::Activate()
@@ -4758,16 +5045,15 @@ void FTLView::Update(f64 frameDeltaTime)
 	if (playerShip->GetIntProperty(SpaceObject::MOTION_TYPE)!=SpaceObject::MOTION_FTL)
 	{
 		DisplayMessage(L"Drop out of FTL due to high gravity");
-		playerShip->BreakFTL(10.0);
 		//gameRoot->ActivateRealSpace();
-		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
+		//gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
 	}
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
 	{
 		DisplayMessage(L"Manual exit from FTL");
 		playerShip->BreakFTL(100.0);
 		//gameRoot->ActivateRealSpace();
-		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
+		//gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
 	}
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
@@ -4778,12 +5064,44 @@ void FTLView::Update(f64 frameDeltaTime)
 		galaxyCoords+=print_f64(playerShip->GetGalaxyCoordinates().Y,L"%.010f");
 		DisplayMessage(galaxyCoords);
 	}
+	if(eventReceiver->IsKeyPressed(irr::KEY_F1))
+		gamePhysics->SetTimeSpeed(1.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F2))
+		gamePhysics->SetTimeSpeed(10.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F3))
+		gamePhysics->SetTimeSpeed(100.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F4))
+		gamePhysics->SetTimeSpeed(1000.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F5))
+		gamePhysics->SetTimeSpeed(10000.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F6))
+		gamePhysics->SetTimeSpeed(100000.0);
 
 	gamePhysics->Update(frameDeltaTime);
+
+	{
+		vector2d playerPos = playerShip->GetGalaxyCoordinates();
+		text_string debug_text(L"FTL\r\n");
+		debug_text += L"Coordinates: ";
+		debug_text += print_f64(playerPos.X,L"%.01f,");
+		debug_text += print_f64(playerPos.Y,L"%.01f\r\n");
+		f64 remainingTime = playerShip->GetFloatProperty(SpaceObject::FTL_REMAINING_TIME);
+		if (remainingTime<1000000)
+		{
+			debug_text += L"Remaining time: ";
+			debug_text += print_f64(remainingTime,L"%.01f");
+			debug_text += L"\r\n";
+		}
+		debug_text += playerShip->GetAutopilotInfo();
+		simpleTextToDisplay->setText(debug_text.c_str());
+
+	}
+
 
 	//TODO: use resourceManager to render?
 	videoDriver->beginScene(true, true, video::SColor(255,20,200,20));
 	sceneManager->drawAll();
+	device->getGUIEnvironment()->drawAll();
 	videoDriver->endScene();
 }
 
@@ -4800,8 +5118,9 @@ void QuasiSpaceView::Init()
 	resourceManager = gameRoot->GetResourceManager();
 
 	videoDriver = resourceManager->GetVideoDriver();
-	//device = resourceManager->GetDevice();
+	device = resourceManager->GetDevice();
 	eventReceiver = resourceManager->GetEventReceiver();
+	viewHUD = resourceManager->GetHUD(DG_Game::VIEW_QUASISPACE);
 
 	sceneManager->clear();
 
@@ -4855,7 +5174,7 @@ void QuasiSpaceView::Update(f64 frameDeltaTime)
 		DisplayMessage(L"Drop out of QuasiSpace");
 		//playerShip->BreakQuasiSpace();
 		//gameRoot->ActivateRealSpace();
-		gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
+		//gameRoot->SwitchView(DG_Game::VIEW_REALSPACE);
 	}
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
@@ -4876,6 +5195,7 @@ void QuasiSpaceView::Update(f64 frameDeltaTime)
 	//TODO: use resourceManager to render?
 	videoDriver->beginScene(true, true, video::SColor(255,200,20,200));
 	sceneManager->drawAll();
+	device->getGUIEnvironment()->drawAll();
 	videoDriver->endScene();
 }
 
@@ -4942,13 +5262,13 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	//video::ECOLOR_FORMAT cf2 =  driver->getColorFormat();
 
+	resourceManager = new ResourceManager();//delete in DG_Game::Close
+	resourceManager->Setup(device,smgr,driver,receiver,gamePhysics);
+
 	RealSpace = new RealSpaceView();//delete in DG_Game::Close
 	RealSpace->SetRoot(this);
 	RealSpace->SetSceneManager(smgr);
 	RealSpace->SetPhysics(gamePhysics);
-
-	resourceManager = new ResourceManager();//delete in DG_Game::Close
-	resourceManager->Setup(device,smgr,driver,receiver,gamePhysics);
 
 	//playerShip = (PlayerShip*)resourceManager->MakeShip();
 	playerShip = new PlayerShip();//delete in DG_Game::Close
@@ -4982,6 +5302,8 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 
 	playerShip->SetPosition(vector3d(LIGHTYEAR*0.07,0,0));
 	playerShip->UpdateGalaxyCoordinates();
+
+	prevPlayerMotion = SpaceObject::MOTION_NAVIGATION;
 
 
 	gamePhysics->Activate();
@@ -5064,6 +5386,24 @@ void DG_Game::Update() {
 	then = now;
 
 	if (frameDeltaTime>FRAME_TIME_MAX) frameDeltaTime = FRAME_TIME_MAX;//50 fps minimum, or slowdown game
+
+
+	if (prevPlayerMotion!=playerShip->GetIntProperty(SpaceObject::MOTION_TYPE))
+	{
+		prevPlayerMotion = (SpaceObject::MotionType)playerShip->GetIntProperty(SpaceObject::MOTION_TYPE);
+		switch(prevPlayerMotion)
+		{
+		case SpaceObject::MOTION_PLUSMINUS:
+			SwitchView(VIEW_QUASISPACE);
+			break;
+		case SpaceObject::MOTION_FTL:
+			SwitchView(VIEW_FTL);
+			break;
+		default:
+			SwitchView(VIEW_REALSPACE);
+			break;
+		}
+	}
 
 	//Update game via current view
 	//Game physics is updated via view due to view-dependency behaviour of physics (i.e. physics not updated in case of viewing map)
@@ -5224,7 +5564,7 @@ void DG_Game::GoInterstellar()
 	}
 
 	RealSpace->Clean();
-	RealSpace->Init();
+	RealSpace->ReInit();
 
 	RealSpace->cameraDistanceDegree = cameraDistance;
 	RealSpace->UpdateCameraDistance();
@@ -5265,7 +5605,7 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	gamePhysics->GoStarSystem();
 
 	RealSpace->Clean();
-	RealSpace->Init();
+	RealSpace->ReInit();
 
 	resourceManager->SetSceneManager(smgr);
 	resourceManager->MakeBackground();
@@ -5340,6 +5680,7 @@ void DG_Game::InternalAcviateView(ViewType newView)
 		activeView = QuasiSpace;
 		break;
 	}
+	resourceManager->ActivateHUD(newView);
 }
 
 s32 DG_Game::AcviateView(ViewType newView)
