@@ -246,6 +246,10 @@ coding demo1:
 120114: ADD: text info for FTL
 120114: ADD: display FTL remaining time
 120114: ADD: timespeed control on FTL 
+120116: ADD: marker of autopilot target
+120117: ADD: deletion of objects
+120117: ADD: show autopilot destination
+120117: adding: autopilot go-to-orbit-at-that-point
 
 
 DONE:
@@ -300,6 +304,7 @@ DONE:
 + autopiloting: autopliot fly-to by mouse click
 + autopliot FTL jump to mouse targeting
 + autopilot fly-to by map click
++ show autopilot destination (on RealSpace and on map)
 
 
 TODO:
@@ -307,7 +312,7 @@ TODO:
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - autopiloting
-  - autopilot go-to-orbit-at-that-point
+  . autopilot go-to-orbit-at-that-point
 - HyperSpace
 - weapons
   - firing plasma
@@ -343,6 +348,7 @@ TODO:
 - going/exiting FTL cannot happens in vicinity of big object, regardless of gravity
 - destruction of objects around ship on going/exiting FTL
 - moving of some background at FTL
+- showing map for FTL travel (marker of autopilot will not be shown?)
 
 
 * RealSpace
@@ -890,6 +896,8 @@ class SpaceObject {
 		void SetIntProperty(IntProperty propertyNumber, s32 newValue);
 		void SetFloatProperty(FloatProperty propertyNumber, f64 newValue);
 		void AddFloatProperty(FloatProperty propertyNumber, f64 addValue);
+
+		SpaceObject* GetEstimation(f64 atTime);//Estimation of object (position+speed) on past/future
 		
 		vector3d GetGravityAcceleration(vector3d location);//Get gravity, emitted by this object
 		vector3d GetXGravityAcceleration(vector3d location);//Get X-gravity, emitted by this object
@@ -902,6 +910,7 @@ class SpaceObject {
 		//bool AutopilotFlyTo(vector3d requiredLocation, f64 requiredSpeed);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
 		bool AutopilotFlyTo(AutopilotInstruction* instruction);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
 		bool AutopilotFTLTo(AutopilotInstruction* instruction, f64 frameTime);//FTL to location
+		bool AutopilotFlyToOrbit(AutopilotInstruction* instruction);//Flying to orbit
 
 		void AddAutopilot(AutopilotInstruction* instruction);
 		void BreakAutopilot();
@@ -911,6 +920,8 @@ class SpaceObject {
 
 		virtual void FallIntoWormhole(SpaceObject* wormhole);
 		virtual void FallIntoStargate(SpaceObject* wormhole);
+
+		void Delete();//call physics to delete this object
 
 		//updating
 		void UpdatePhysics(f64 time);
@@ -972,6 +983,8 @@ class GamePhysics {
 		void AddObject(SpaceObject* newObject);
 		void UpdateMarkers(f64 cameraDistance);
 		void UpdateMapMarkers(f64 mapScale);
+
+		void RemoveObject(SpaceObject* removedObject);
 
 		s32 IsGravity();
 
@@ -1045,6 +1058,8 @@ class DG_Game {
 
 		bool IsViewActive(ViewType checkedView);
 
+		void UseSceneManager(ViewType ofView);
+
 		void GoInterstellar();
 		void GoStarSystem(GalaxyStarSystem* toStarSystem);
 
@@ -1107,6 +1122,7 @@ class ResourceManager
 		SpaceObject* MakeWormhole();
 		SpaceObject* MakeStargate();
 		SpaceObject* MakeShip();
+		SpaceObject* MakeMarker();
 		SpaceObject* LoadNodesForShip(SpaceObject* ship);
 		void AddMarker(SpaceObject* toObject, u32 type);
 		void ActivateHUD(DG_Game::ViewType view);
@@ -1143,6 +1159,8 @@ public:
 	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
 	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
 	void SetPhysics(GamePhysics* newPhysics) {gamePhysics = newPhysics;}
+
+	scene::ISceneManager* GetSceneManager() {return sceneManager;}
 
 	void DisplayMessage(text_string message);
 
@@ -1557,9 +1575,15 @@ public:
 		AP_FLY_TO,          //Fly to specific location, params: vector1 is required location, value1 is required speed
 		//AP_FTL_TIMER,       //FTL jump for specific time, params: value1 is time 
 		AP_FTL_TO,          //FTL fly to specific location, params: vector1 is required location (galaxy coordinates)
+		AP_FLY_TO_ORBIT,    //Fly to orbit of object near specific location, params: paramObject is object to orbit, value1 is orbit height
 	};
 
-	AutopilotInstruction() {prepareText = false;}
+	AutopilotInstruction() {prepareText = false; object = 0; paramObject = 0;}
+	~AutopilotInstruction()	{
+		if (object)
+			object->Delete();
+	}
+
 
 	AutopilotType instruction;
 	bool prepareText;
@@ -1569,6 +1593,8 @@ public:
 	f64 value1;
 	f64 value2;
 	f64 value3;
+	SpaceObject* object;
+	SpaceObject* paramObject;
 	text_string textInfo;
 };
 
@@ -1733,6 +1759,10 @@ SpaceObject::SpaceObject()
 SpaceObject::~SpaceObject()
 {
 //	name.~string();
+	if (sceneNode)
+		sceneNode->remove();
+	if (sceneMarkerNode)
+		sceneMarkerNode->remove();
 	BreakAutopilot();
 
 	return;
@@ -1951,7 +1981,7 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 	
 	flyDirection.normalize();
 	speedInDirection = flyDirection.dotProduct(speed);
-	maxThrust = GetFloatProperty(MAX_THRUST)*0.8;
+	maxThrust = GetFloatProperty(MAX_THRUST)*0.5;
 
 	switch(instruction->phase)
 	{
@@ -2032,25 +2062,30 @@ bool SpaceObject::AutopilotFlyTo(AutopilotInstruction* instruction)
 	case 3:
 		//Time to decelerate
 		//maxSpeed = 0.8*sqrt(2.0*sqrt(distanceSQ)*maxThrust + requiredSpeed*requiredSpeed);
-		if (distanceSQ<1)
 		{
-			if (AutopilotSetSpeed(flyDirection*requiredSpeed))
-			{
-				//wprintf(L" Autopilot fly-to finished\r\n");
-				return true;
-			}
-			return false;
-		}
-		else
-		{
-			AutopilotRotate(-flyDirection);
+			//TODO: deceleration by timer
 
-			f64 k;
-			maxSpeed = instruction->value2;
-			distanceForDeceleration = 0.5*(speedInDirection*speedInDirection - requiredSpeed*requiredSpeed)/maxThrust + FRAME_TIME_MAX *10.0*maxSpeed;
-			k = sqrt(distanceSQ)/distanceForDeceleration;
-			if (k>0.99) k = 0.99;
-			AutopilotSetSpeed(flyDirection*maxSpeed*k);
+			f64 minDist = 1 + requiredSpeed*FRAME_TIME_MAX*10;
+			if (distanceSQ<(minDist*minDist))
+			{
+				if (AutopilotSetSpeed(flyDirection*requiredSpeed))
+				{
+					//wprintf(L" Autopilot fly-to finished\r\n");
+					return true;
+				}
+				return false;
+			}
+			else
+			{
+				AutopilotRotate(-flyDirection);
+
+				f64 k;
+				maxSpeed = instruction->value2;
+				distanceForDeceleration = 0.5*(speedInDirection*speedInDirection - requiredSpeed*requiredSpeed)/maxThrust + FRAME_TIME_MAX *10.0*maxSpeed;
+				k = sqrt(distanceSQ)/distanceForDeceleration;
+				if (k>0.99) k = 0.99;
+				AutopilotSetSpeed(flyDirection*(maxSpeed*k + (1.0-k)*requiredSpeed));
+			}
 		}
 		break;
 	default:
@@ -2169,6 +2204,65 @@ bool SpaceObject::AutopilotFTLTo(AutopilotInstruction* instruction, f64 frameTim
 	return false;
 }
 
+bool SpaceObject::AutopilotFlyToOrbit(AutopilotInstruction* instruction)
+{
+	switch(instruction->phase)
+	{
+	case 0://Not calculated
+		{
+			u32 attempts;
+			f64 nowTime = physics->globalTime;
+			f64 meetingTime;
+			f64 maxSpeed;
+			SpaceObject* estimation;
+			vector3d meetingPos;
+			vector3d meetingPos2;
+			maxSpeed = LIGHTSPEED*0.5;
+
+			meetingPos2 = instruction->paramObject->GetPosition();
+			
+			//very dumb, direct to object itself and use contant speed c/2
+			for(attempts=0;attempts<100;attempts++)
+			{
+				meetingPos = meetingPos2;
+				meetingTime = nowTime+(position-meetingPos).getLength()/maxSpeed + 2;
+				estimation = instruction->paramObject->GetEstimation(meetingTime);
+				meetingPos2 = estimation->GetPosition();
+				delete estimation;
+
+				if ((meetingPos2-meetingPos).getLengthSQ()<1) break;
+			}
+			if (attempts>=100)
+			{
+				wprintf(L" Autopilot orbiting, failed to solve orbital equation, aborted\r\n");
+				return true;
+			}
+			else
+			{
+				wprintf(L" Autopilot orbiting, solved orbital equation in %i\r\n",attempts);
+
+			}
+			
+			AutopilotInstruction* newInstruction = new AutopilotInstruction();
+
+			//Dirty hack :)
+			instruction->instruction = AutopilotInstruction::AP_FLY_TO;
+			instruction->vector1 = vector2d(meetingPos2.X,meetingPos2.Y);
+			instruction->value1 = 0;//speed, 0 is temprorary
+			instruction->value2 = 0;//maxspeed = 0
+			instruction->phase = 0;
+			instruction->object->SetPosition(meetingPos2);
+			
+			return false;
+		}
+		break;
+	case 1:
+		break;
+	}
+	return false;
+}
+
+
 void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 {
 	if (sceneMarkerNode)
@@ -2251,6 +2345,13 @@ void SpaceObject::UpdatePhysics(f64 time)
 			break;
 		case AutopilotInstruction::AP_FTL_TO:
 			if (AutopilotFTLTo(ins,time))
+			{
+				delete ins;
+				autopilotQueue.erase(0);
+			}
+			break;
+		case AutopilotInstruction::AP_FLY_TO_ORBIT:
+			if (AutopilotFlyToOrbit(ins))
 			{
 				delete ins;
 				autopilotQueue.erase(0);
@@ -2456,6 +2557,93 @@ vector3d SpaceObject::GetSpeed()
 	return speed;
 }
 
+//Estimation of object movement in future or past
+//Creates new SpaceObject which have: position, speed, ROTATION_ANGLE, ROTATION_SPEED
+//other properties should not be readed by caller function
+//caller function is responsible for deletion of returned object
+SpaceObject* SpaceObject::GetEstimation(f64 atTime)
+{
+	SpaceObject* estimation = new SpaceObject();//delete in caller function
+
+	switch (GetIntProperty(MOTION_TYPE))
+	{
+	case MOTION_NONE:
+		estimation->speed = speed;
+		estimation->position = position;
+		estimation->SetFloatProperty(ROTATION_ANGLE,GetFloatProperty(ROTATION_ANGLE));
+		estimation->SetFloatProperty(ROTATION_SPEED,GetFloatProperty(ROTATION_SPEED));
+		//do nothing;
+		break;
+	case MOTION_NAVIGATION:
+	case MOTION_FTL:
+		{
+			f64 rotAngle;
+			estimation->speed = speed;
+			estimation->position = position+speed*(atTime-physics->globalTime);
+			rotAngle = GetFloatProperty(ROTATION_ANGLE)+GetFloatProperty(ROTATION_SPEED)*(atTime-physics->globalTime);
+			estimation->SetFloatProperty(ROTATION_ANGLE,rotAngle);
+			estimation->SetFloatProperty(ROTATION_SPEED,GetFloatProperty(ROTATION_SPEED));
+		}
+		break;
+	case MOTION_LINKED:
+		{
+			if (orbitingObject!=0)
+			{
+				SpaceObject* estOrbiting = orbitingObject->GetEstimation(atTime);
+				vector3d linkRot = estOrbiting->GetDirection();
+				estimation->position=estOrbiting->position;
+				estimation->position.X+=linkPosition.X*linkRot.X-linkPosition.Y*linkRot.Y;
+				estimation->position.Y+=linkPosition.Y*linkRot.X+linkPosition.X*linkRot.Y;
+				estimation->SetFloatProperty(ROTATION_ANGLE,estOrbiting->GetFloatProperty(ROTATION_ANGLE)+GetFloatProperty(LINK_ROTATION_ANGLE));
+				delete estOrbiting;
+			}
+			else
+			{
+				estimation->speed = speed;
+				estimation->position = position;
+				estimation->SetFloatProperty(ROTATION_ANGLE,GetFloatProperty(ROTATION_ANGLE));
+				estimation->SetFloatProperty(ROTATION_SPEED,GetFloatProperty(ROTATION_SPEED));
+			}
+		}
+		break;
+	case MOTION_ORBITAL:
+		{
+			//simple circular orbiting
+			f64 Phase = GetFloatProperty(ORBITAL_EPOCH_PHASE);
+			f64 orbitRadius = GetFloatProperty(ORBITAL_RADIUS);
+			f64 orbitPeriod = GetFloatProperty(ORBITAL_PERIOD);
+			if (GetFloatProperty(ORBITAL_PERIOD)!=0)
+			{
+				f64 speedValue = orbitRadius*TWO_PI/orbitPeriod;
+				//Phase+=360.0*physics->globalTime/orbitalPeriod;
+				Phase+=TWO_PI*atTime/orbitPeriod;
+				estimation->speed.X = -sin(Phase)*speedValue;
+				estimation->speed.Y = cos(Phase)*speedValue;
+				estimation->speed.Z = 0;
+			}
+			else
+			{
+				estimation->speed = vector3d(0);
+			}
+			estimation->position.X = cos(Phase)*orbitRadius;
+			estimation->position.Y = sin(Phase)*orbitRadius;
+			estimation->position.Z = 0;
+			if (orbitingObject!=0)
+			{
+				SpaceObject* estOrbiting = orbitingObject->GetEstimation(atTime);
+				estimation->position+=estOrbiting->position;
+				estimation->speed+=estOrbiting->speed;
+				delete estOrbiting;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+	return estimation;
+}
+
 void SpaceObject::SetNode(SceneNode * node)
 {
 	sceneNode = node;
@@ -2631,6 +2819,10 @@ text_string SpaceObject::GetAutopilotInfo()
 	return L"";
 }
 
+void SpaceObject::Delete()
+{
+	physics->RemoveObject(this);
+}
 
 //#########################################################################
 //GamePhysics
@@ -2686,6 +2878,17 @@ void GamePhysics::AddObject(SpaceObject* newObject)
 {
 	listObjects.push_back(newObject);
 	newObject->SetPhysics(this);
+}
+
+void GamePhysics::RemoveObject(SpaceObject* removedObject)
+{
+	s32 index = listObjects.linear_search(removedObject);
+	if (index<0)
+		return;//nothing to delete;
+
+	delete listObjects[index];
+	listObjects.erase(index);
+
 }
 
 vector3d GamePhysics::GetGravityAcceleration(vector3d location)
@@ -3653,6 +3856,30 @@ SpaceObject* ResourceManager::MakeStargate()
 	return newStargate;
 }
 
+SpaceObject* ResourceManager::MakeMarker()
+{
+	SpaceObject* newMarker = new SpaceObject();//delete is in GamePhysics::ClearObjects
+	
+	/*
+	SceneNode * sceneNode;
+
+	sceneNode = sceneManager->addSphereSceneNode((f32)0.5,3);
+	if (sceneNode)
+	{
+		//sceneNode->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/planet0.bmp"));
+	}
+	newMarker->SetNode(sceneNode);
+	*/
+
+	newMarker->SetNode(0);
+	newMarker->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0);
+
+	physics->AddObject(newMarker);
+	AddMarker(newMarker,0);
+
+	return newMarker;
+}
+
 
 SpaceObject* ResourceManager::LoadNodesForShip(SpaceObject* ship)
 {
@@ -4267,10 +4494,24 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			ins->prepareText = true;
 			ins->textInfo = L"";
 			ins->vector1 = vector2d(x,y);
-			ins->value1 = 0;//speed, 0 is temprorary
+			//ins->value1 = 0;//speed, 0 is temprorary
+			ins->value1 = playerShip->GetSpeed().getLength();
+			if (ins->value1>LIGHTSPEED*0.5)
+				ins->value1 = LIGHTSPEED*0.5;
 			ins->value2 = 0;//maxspeed = 0
 			ins->phase = 0;
 			playerShip->AddAutopilot(ins);
+
+			resourceManager->SetSceneManager(sceneManager);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(vector3d(x,y,0));
+			marker->SetName(L"autopilot marker");
+			UpdateCameraDistance();//to show marker
+
+			ins->object = marker;
+
 		}
 		else if (buttons&2)
 		{
@@ -4285,6 +4526,64 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			ins->vector1 = destination;//vector2d(x,y);
 			ins->phase = 0;
 			playerShip->AddAutopilot(ins);
+
+			resourceManager->SetSceneManager(sceneManager);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(vector3d(x,y,0));
+			marker->SetName(L"autopilot FTL marker");
+			UpdateCameraDistance();//to show marker
+
+			ins->object = marker;
+
+		}
+		else if (buttons&4)
+		{
+			wprintf(L" Autopilot orbiting to: %f,%f\r\n",x,y);
+
+			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
+			vector3d clickedPosition=vector3d(x,y,0);
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+
+			GravityInfo* gravInfo = gamePhysics->GetGravityInfo(clickedPosition);
+			if (gravInfo->maxGravityObject)
+			{//only if there is dominant object
+				ins->instruction = AutopilotInstruction::AP_FLY_TO_ORBIT;
+				ins->paramObject = gravInfo->maxGravityObject;
+				ins->value1 = (clickedPosition - gravInfo->maxGravityObject->GetPosition()).getLength();
+				ins->value2 = 0;//maxspeed = 0
+			}
+			else
+			{
+				ins->instruction = AutopilotInstruction::AP_FLY_TO;
+				ins->vector1 = vector2d(x,y);
+				ins->value1 = playerShip->GetSpeed().getLength();
+				if (ins->value1>LIGHTSPEED*0.5)
+					ins->value1 = LIGHTSPEED*0.5;
+				ins->value2 = 0;//maxspeed = 0
+			}
+			delete gravInfo;
+
+			ins->prepareText = true;
+			ins->textInfo = L"";
+			ins->phase = 0;
+			playerShip->AddAutopilot(ins);
+
+			resourceManager->SetSceneManager(sceneManager);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(clickedPosition);
+			marker->SetName(L"autopilot orbiting marker");
+			UpdateCameraDistance();//to show marker
+
+			ins->object = marker;
+		}
+		else
+		{
+			wprintf(L" Mouse click on: %f,%f\r\n",x,y);
 		}
 	
 	}
@@ -4824,9 +5123,35 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 			ins->value2 = 0;//maxspeed = 0
 			ins->phase = 0;
 			gameRoot->GetPlayerShip()->AddAutopilot(ins);
+
+			
+			//resourceManager->SetSceneManager(sceneManager);
+			gameRoot->UseSceneManager(DG_Game::VIEW_REALSPACE);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(vector3d(clickPos.X,clickPos.Y,0));
+			marker->SetName(L"autopilot marker");
+			AddObject(marker);
+			UpdateCameraDistance(0);//to show marker
+
+			ins->object = marker;
+			
+
 		}
 		else if (buttons&2)
 		{
+
+			//resourceManager->SetSceneManager(sceneManager);
+			gameRoot->UseSceneManager(DG_Game::VIEW_REALSPACE);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(vector3d(clickPos.X,clickPos.Y,0));
+			marker->SetName(L"autopilot FTL marker");
+			AddObject(marker);
+			UpdateCameraDistance(0);//to show marker
+
 			clickPos += shiftToGalaxy;
 			clickPos/=LIGHTYEAR;
 			wprintf(L" Autopilot FTL to: %f,%f\r\n",clickPos.X,clickPos.Y);
@@ -4836,6 +5161,54 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 			ins->vector1 = clickPos;
 			ins->phase = 0;
 			gameRoot->GetPlayerShip()->AddAutopilot(ins);
+
+			ins->object = marker;
+
+		}
+		else if (buttons&4)
+		{
+			wprintf(L" Autopilot orbiting to: %f,%f\r\n",clickPos.X,clickPos.Y);
+
+			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
+			vector3d clickedPosition=vector3d(clickPos.X,clickPos.Y,0);
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+
+			GravityInfo* gravInfo = gamePhysics->GetGravityInfo(clickedPosition);
+			if (gravInfo->maxGravityObject)
+			{//only if there is dominant object
+				ins->instruction = AutopilotInstruction::AP_FLY_TO_ORBIT;
+				ins->paramObject = gravInfo->maxGravityObject;
+				ins->value1 = (clickedPosition - gravInfo->maxGravityObject->GetPosition()).getLength();
+				ins->value2 = 0;//maxspeed = 0
+			}
+			else
+			{
+				ins->instruction = AutopilotInstruction::AP_FLY_TO;
+				ins->vector1 = clickPos;
+				ins->value1 = gameRoot->GetPlayerShip()->GetSpeed().getLength();
+				if (ins->value1>LIGHTSPEED*0.5)
+					ins->value1 = LIGHTSPEED*0.5;
+				ins->value2 = 0;//maxspeed = 0
+			}
+			delete gravInfo;
+
+			ins->prepareText = true;
+			ins->textInfo = L"";
+			ins->phase = 0;
+			gameRoot->GetPlayerShip()->AddAutopilot(ins);
+
+			gameRoot->UseSceneManager(DG_Game::VIEW_REALSPACE);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(clickedPosition);
+			marker->SetName(L"autopilot orbiting marker");
+
+			ins->object = marker;
+
+			AddObject(marker);
+			UpdateCameraDistance(0);//to show marker
 		}
 		else
 		{
@@ -5662,6 +6035,7 @@ void DG_Game::InternalAcviateView(ViewType newView)
 			GoInterstellar();
 		}*/
 		RealSpace->Activate();
+		RealSpace->UpdateCameraDistance();
 		activeView = RealSpace;
 		break;
 	case VIEW_SECTOR_MAP:
@@ -5732,6 +6106,26 @@ bool DG_Game::IsViewActive(ViewType checkedView)
 		}
 	}
 	return false;
+}
+
+void DG_Game::UseSceneManager(ViewType ofView)
+{
+	switch(ofView)
+	{
+	case VIEW_REALSPACE:
+		resourceManager->SetSceneManager(RealSpace->GetSceneManager());
+		break;
+	case VIEW_FTL:
+		resourceManager->SetSceneManager(RealSpace->GetSceneManager());
+		break;
+	case VIEW_SECTOR_MAP:
+		resourceManager->SetSceneManager(RealSpace->GetSceneManager());
+		break;
+	case VIEW_QUASISPACE:
+		resourceManager->SetSceneManager(RealSpace->GetSceneManager());
+		break;
+	}
+	return;
 }
 
 void DG_Game::SaveGame()
