@@ -251,7 +251,12 @@ coding demo1:
 120117: ADD: show autopilot destination
 120118: FIX: autopilot fly-to better deceleration
 120119: ADD: autopilot go-to-orbit-at-that-point (rather rough)
-120119: adding: fire weapon
+120120: CHG: prolong stargate open on object falling
+120120: ADD: removing projectiles by timer
+120120: CHG: better collision calculation with wormholes and stargates
+120120: CHG: stargate event horizon now created and destroyed
+120120: CHG: SpaceObjects all arrayed properties default init to 0
+
 
 
 DONE:
@@ -308,26 +313,24 @@ DONE:
 + autopilot fly-to by map click
 + show autopilot destination (on RealSpace and on map)
 + autopilot go-to-orbit-at-that-point
++ stargate system : "killing" non-player objects
++ wormhole network : "killing" non-player objects
 
 
 TODO:
 
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
+- stargate system
+  -! duplicate open
+  - better mesh and textures
+  - defence force-field around gate object
 - HyperSpace
 - weapons
-  - firing plasma
-  - lightspeed limit
   - hit objects
-  - removing after long distance
-- stargate system
-  - better mesh and textures
-  - "killing" non-player objects
-  - defence force-field around gate object
 - wormhole network
   - animation: opening on approaching mass and closing - by process
   .? advanced triangulation for building wormhole net
-  - "killing" non-player objects
 - map
   ? grid in metres for detailed zooms
 - save & load
@@ -855,7 +858,7 @@ class SpaceObject {
 
 			LINK_ROTATION_ANGLE, //rotation relative to parent object (in radians)
 
-			PROCESS_START_TIME,  //Time, when current proccess started
+			PROCESS_START_TIME,  //Time, when current proccess started (or should ended)
 
 			MAX_FTL_GRAVITY,     //Max acceleration for FTL possible
 			FTL_REMAINING_TIME,  //Time, left for flying on FTL
@@ -871,6 +874,7 @@ class SpaceObject {
 			PROCESS_STARGATE_OPENING,    //stargate opens, 1 second
 			PROCESS_STARGATE_WAITING,    //stargate waiting object to pass, 15 seconds
 			PROCESS_STARGATE_CLOSING,    //stargate closing, 1 second
+			PROCESS_DELAYED_DELETION,    //disappear at start time
 		};
 
 		SpaceObject();//Constuctor
@@ -1127,6 +1131,7 @@ class ResourceManager
 		SpaceObject* MakeBarycenter();
 		SpaceObject* MakeWormhole();
 		SpaceObject* MakeStargate();
+		SpaceObject* MakeStargateEH();
 		SpaceObject* MakeShip();
 		SpaceObject* MakeMarker();
 		SpaceObject* MakeProjectile();
@@ -1724,46 +1729,51 @@ SpaceObject::SpaceObject()
 	position = vector3d(0);
 	prevPosition = vector3d(0);
 	speed = vector3d(0);
-	SetFloatProperty(ROTATION_ANGLE,0);
+	//SetFloatProperty(ROTATION_ANGLE,0);
 	sceneNode = 0;
 	sceneMarkerNode = 0;
-	SetFloatProperty(MARKER_SIZE,0.01);
+	orbitingObject = 0;
+
 	name = L"";
 
+	for (u32 i=0;i<INT_PROPERTIES_COUNT;i++)
+		IntProperties[i]=0;
+	for (u32 i=0;i<FLOAT_PROPERTIES_COUNT;i++)
+		FloatProperties[i]=0;
 
 	SetIntProperty(VISIBLE_TO_PLAYER,1);
-	SetIntProperty(AFFECTED_BY_GRAVITY,0);
-	SetIntProperty(EMIT_GRAVITY,0);
-	SetIntProperty(WORMHOLE,0);
-	SetIntProperty(TRAVEL_TO_X,0);
-	SetIntProperty(TRAVEL_TO_Y,0);
+	//SetIntProperty(AFFECTED_BY_GRAVITY,0);
+	//SetIntProperty(EMIT_GRAVITY,0);
+	//SetIntProperty(WORMHOLE,0);
+	//SetIntProperty(TRAVEL_TO_X,0);
+	//SetIntProperty(TRAVEL_TO_Y,0);
 	SetIntProperty(MOTION_TYPE,MOTION_NONE);
-	SetIntProperty(STARGATE,0);
+	//SetIntProperty(STARGATE,0);
 	SetIntProperty(CURRENT_PROCESS,PROCESS_NONE);
 
-	SetFloatProperty(PROCESS_START_TIME,0);
+	SetFloatProperty(MARKER_SIZE,0.01);
+	//SetFloatProperty(PROCESS_START_TIME,0);
 
 	linkPosition = vector3d(0);
-	SetFloatProperty(LINK_ROTATION_ANGLE,0);
+	//SetFloatProperty(LINK_ROTATION_ANGLE,0);
 
 	//ftlSpeed = 10.0;
 	//isEmitGravity = false;
 	//isAffectedByGravity = false;
 	//motionType = MOTION_NONE;
 	//isVisibleToPlayer = false;
-	SetFloatProperty(MASS,0);
+	//SetFloatProperty(MASS,0);
 	SetFloatProperty(GRAVITY_MIN_RADIUS,1);
-	SetFloatProperty(GEOMETRY_RADIUS,0);
-	SetFloatProperty(MAX_THRUST,0);
-	SetFloatProperty(THRUST_POWER,0);
-	SetFloatProperty(MAX_ROT_THRUST,0);
-	orbitingObject = 0;
+	//SetFloatProperty(GEOMETRY_RADIUS,0);
+	//SetFloatProperty(MAX_THRUST,0);
+	//SetFloatProperty(THRUST_POWER,0);
+	//SetFloatProperty(MAX_ROT_THRUST,0);
 	SetFloatProperty(ORBITAL_RADIUS,1.0);
 	SetFloatProperty(ORBITAL_PERIOD,1.0);
-	SetFloatProperty(ORBITAL_EPOCH_PHASE,0);
-	SetFloatProperty(ROTATION_SPEED,0);
+	//SetFloatProperty(ORBITAL_EPOCH_PHASE,0);
+	//SetFloatProperty(ROTATION_SPEED,0);
 	SetFloatProperty(MAX_FTL_GRAVITY,0.003);
-	SetFloatProperty(FTL_REMAINING_TIME,0);
+	//SetFloatProperty(FTL_REMAINING_TIME,0);
 
 }
 
@@ -2637,14 +2647,21 @@ void SpaceObject::UpdatePhysics(f64 time)
 			//Closing in 1 second
 			f64 phase = physics->globalTime - GetFloatProperty(PROCESS_START_TIME);
 			f32 scale = (f32)(70.0*(1.0-phase));
+			if (sceneNode)
+				sceneNode->setScale(vector3df(scale));
 			if (phase>1)
 			{
 				scale = 0.0;
 				SetIntProperty(VISIBLE_TO_PLAYER,0);
 				SetIntProperty(CURRENT_PROCESS,PROCESS_NONE);
+				Delete();
 			}
-			if (sceneNode)
-				sceneNode->setScale(vector3df(scale));
+		}
+		break;
+	case PROCESS_DELAYED_DELETION:
+		{
+			if (physics->globalTime>GetFloatProperty(PROCESS_START_TIME))
+				Delete();
 		}
 		break;
 	}
@@ -2961,8 +2978,13 @@ SpaceObject* SpaceObject::FireProjectile()
 	projectile = physics->GetRoot()->GetResourceManager()->MakeProjectile();
 
 	projectile->position = position + GetDirection()*1;
-	projectile->SetSpeed(speed + GetDirection()*LIGHTSPEED*0.01);
+	//projectile->SetSpeed(speed + GetDirection()*LIGHTSPEED*0.01);
+	//projectile->SetSpeed(speed + GetDirection()*300.0);
+	projectile->SetSpeed(speed + GetDirection()*30000.0);
 	projectile->SetName(text_string(L"plasma ball"));
+	
+	projectile->SetIntProperty(CURRENT_PROCESS,PROCESS_DELAYED_DELETION);
+	projectile->SetFloatProperty(PROCESS_START_TIME,physics->globalTime+10);
 
 	return projectile;
 	
@@ -3468,60 +3490,75 @@ void GamePhysics::CheckCollisions(SpaceObject* object)
 	{
 		if (listObjects[i]==object)
 			continue;//Skip same object
-		//distance = (object->GetPosition()-listObjects[i]->GetPosition()).getLengthSQ();
-		minDistance = (object->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS)-listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS));
-		minDistance*=minDistance;
-		if ((object->GetPosition()-listObjects[i]->GetPosition()).getLengthSQ() < minDistance)
+
+		if (listObjects[i]->GetIntProperty(SpaceObject::WORMHOLE)!=0)
 		{
-			//Collision
-			if (listObjects[i]->GetIntProperty(SpaceObject::WORMHOLE)!=0)
+			//f64 projectedDistance;
+			vector3d curVector = object->GetPosition()-listObjects[i]->GetPosition();
+			vector3d prevVector = object->GetPrevPosition()-listObjects[i]->GetPrevPosition();
+			vector3d wormholeDirection = listObjects[i]->GetDirection();
+			vector3d wormholeNormale = vector3d(wormholeDirection.Y,-wormholeDirection.X,0);
+			if (curVector.dotProduct(wormholeNormale)*prevVector.dotProduct(wormholeNormale)<=0)
 			{
-				//f64 projectedDistance;
-				vector3d curVector = object->GetPosition()-listObjects[i]->GetPosition();
-				vector3d prevVector = object->GetPrevPosition()-listObjects[i]->GetPrevPosition();
-				vector3d wormholeDirection = listObjects[i]->GetDirection();
-				vector3d wormholeNormale;
-				wormholeNormale.X = wormholeDirection.Y;
-				wormholeNormale.Y = -wormholeDirection.X;
-				//projectedDistance = curVector.dotProduct(wormholeDirection);
-				if (curVector.dotProduct(wormholeNormale)*prevVector.dotProduct(wormholeNormale)<0)
+				//object cross wormhole plane - should check distance of cross to center of wormhole
+				
+				//calc: shift = pos - prevpos, fall = gate + axis*y, fall = pos + shift*x, y = [pos-gate,shift]/[axis,shift]
+				vector3d shift = object->GetPosition()-object->GetPrevPosition();
+				f64 fallLocation = (shift.X*curVector.Y-shift.Y*curVector.X)/(shift.X*wormholeDirection.Y-shift.Y*wormholeDirection.X);
+				if (abs(fallLocation)<listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS))
 				{
-					object->BreakAutopilot();
 					object->FallIntoWormhole(listObjects[i]);
 					return;//no more collisions expected
 				}
-				continue;
 			}
-			if (listObjects[i]->GetIntProperty(SpaceObject::STARGATE)!=0)
+			continue;//wormhole, other cases of collision should not be checked
+		}
+
+		if (listObjects[i]->GetIntProperty(SpaceObject::STARGATE)!=0)
+		{
+			if (listObjects[i]->GetIntProperty(SpaceObject::STARGATE)!=2)
+				continue; //skip stargate body, proceede with event horizon only
+
+			if (listObjects[i]->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_STARGATE_WAITING)
+				continue; //skip closed/opening/closing wormholes
+
+			vector3d curVector = object->GetPosition()-listObjects[i]->GetPosition();
+			vector3d prevVector = object->GetPrevPosition()-listObjects[i]->GetPrevPosition();
+			vector3d stargateNormale = listObjects[i]->GetDirection();
+			
+			if (curVector.dotProduct(stargateNormale)*prevVector.dotProduct(stargateNormale)<=0)
 			{
-				if (listObjects[i]->GetIntProperty(SpaceObject::STARGATE)!=2)
-					continue; //skip stargate body, proceede with event horizon only
-
-				if (listObjects[i]->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_STARGATE_WAITING)
-					continue; //skip closed/opening/closing wormholes
-
-				vector3d curVector = object->GetPosition()-listObjects[i]->GetPosition();
-				vector3d prevVector = object->GetPrevPosition()-listObjects[i]->GetPrevPosition();
-				vector3d stargateNormale = listObjects[i]->GetDirection();
-				
-				if (curVector.dotProduct(stargateNormale)*prevVector.dotProduct(stargateNormale)<0)
+				//object cross stargate plane - should check distance of cross to center of gate
+				vector3d stargateDirection = vector3d(stargateNormale.Y,-stargateNormale.X,0);
+				vector3d shift = object->GetPosition()-object->GetPrevPosition();
+				f64 fallLocation = (shift.X*curVector.Y-shift.Y*curVector.X)/(shift.X*stargateDirection.Y-shift.Y*stargateDirection.X);
+				if (abs(fallLocation)<listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS))
 				{
 					if (listObjects[i]->GetIntProperty(SpaceObject::TRAVEL_TO_X)<-65536)
 					{//bounce to event horizon of output stargate
 						wprintf(L"DG: %ws bounce on event horizon of output stargate\r\n",object->GetName().c_str());
 						
 						f64 perpendicularSpeed = stargateNormale.dotProduct(object->GetSpeed()-listObjects[i]->GetSpeed());
-						object->SetPosition(object->GetPrevPosition() + listObjects[i]->GetPosition()-listObjects[i]->GetPrevPosition()); //return object to prev position and shift for vector of movement of listObjects[i]
+						//object->SetPosition(object->GetPrevPosition() + listObjects[i]->GetPosition()-listObjects[i]->GetPrevPosition()); //return object to prev position and shift for vector of movement of listObjects[i]
+						object->SetPosition(object->GetPosition() + listObjects[i]->GetPosition()-listObjects[i]->GetPrevPosition()-2.0*stargateNormale*stargateNormale.dotProduct(curVector)); 
 						object->SetSpeed(object->GetSpeed()-2.0*perpendicularSpeed*stargateNormale);
 						continue; //no more collisions expected
 					}
-					object->BreakAutopilot();
+					listObjects[i]->SetFloatProperty(SpaceObject::PROCESS_START_TIME,globalTime);//reset stargate closing timer
 					object->FallIntoStargate(listObjects[i]);
 					return;//no more collisions expected
 				}
-
-				continue;
 			}
+			continue;//stargate, other cases of collision should not be checked
+		}
+
+
+		//distance = (object->GetPosition()-listObjects[i]->GetPosition()).getLengthSQ();
+		minDistance = (object->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS)+listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS));
+		minDistance*=minDistance;
+		
+		if ((object->GetPosition()-listObjects[i]->GetPosition()).getLengthSQ() < minDistance)
+		{
 			wprintf(L"DG: collision %ws with %ws\r\n",object->GetName().c_str(),listObjects[i]->GetName().c_str());
 		}
 	}
@@ -3643,8 +3680,9 @@ void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
 	vector2ds coordinates;
 	coordinates = gameRoot->GetGalaxy()->StargateAddress2Coordinates(address);
 
-	destGate = GetFirstObject(SpaceObject::STARGATE,2);
-	if ((sender->GetPosition()-destGate->GetPosition()).getLengthSQ()>1e8)
+	//destGate = GetFirstObject(SpaceObject::STARGATE,2);
+	destGate = GetFirstObject(SpaceObject::STARGATE,1);
+	if (destGate==0 || (sender->GetPosition()-destGate->GetPosition()).getLengthSQ()>1e8)
 	{
 		wprintf(L" ** Nothing happens\r\n");
 		return;
@@ -3686,11 +3724,22 @@ void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
 
 	wprintf(L" ** Stargate activated and opened\r\n");
 
+	/*
+
 	destGate->SetIntProperty(SpaceObject::VISIBLE_TO_PLAYER,1);
 	destGate->SetIntProperty(SpaceObject::CURRENT_PROCESS,SpaceObject::PROCESS_STARGATE_OPENING);
 	destGate->SetIntProperty(SpaceObject::TRAVEL_TO_X,coordinates.X);
 	destGate->SetIntProperty(SpaceObject::TRAVEL_TO_Y,coordinates.Y);
 	destGate->SetFloatProperty(SpaceObject::PROCESS_START_TIME,globalTime);
+	*/
+	gameRoot->UseSceneManager(DG_Game::VIEW_REALSPACE);
+	SpaceObject* eventHorizon = gameRoot->GetResourceManager()->MakeStargateEH();
+	eventHorizon->SetLinkedParams(destGate,vector3d(13.0,0,0),0);
+	eventHorizon->SetIntProperty(SpaceObject::VISIBLE_TO_PLAYER,1);
+	eventHorizon->SetIntProperty(SpaceObject::CURRENT_PROCESS,SpaceObject::PROCESS_STARGATE_OPENING);
+	eventHorizon->SetIntProperty(SpaceObject::TRAVEL_TO_X,coordinates.X);
+	eventHorizon->SetIntProperty(SpaceObject::TRAVEL_TO_Y,coordinates.Y);
+	eventHorizon->SetFloatProperty(SpaceObject::PROCESS_START_TIME,globalTime);
 
 	return;
 }
@@ -3963,8 +4012,9 @@ SpaceObject* ResourceManager::MakeStargate()
 {
 	SpaceObject* newStargate = new SpaceObject();//delete is in GamePhysics::ClearObjects
 	SceneNode * sceneNode;
+	/*
 	SpaceObject* newStargateEH = new SpaceObject();//delete is in GamePhysics::ClearObjects
-	SceneNode * sceneNodeEH;
+	SceneNode * sceneNodeEH;*/
 
 	sceneNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/sg1.irrmesh"));
 
@@ -3980,7 +4030,7 @@ SpaceObject* ResourceManager::MakeStargate()
 	physics->AddObject(newStargate);
 	AddMarker(newStargate,0);
 
-
+/*
 	sceneNodeEH = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/sg1eh.irrmesh"));
 	sceneNodeEH->setScale(vector3df(70.0f));
 	newStargateEH->SetNode(sceneNodeEH);
@@ -4002,9 +4052,38 @@ SpaceObject* ResourceManager::MakeStargate()
 
 	physics->AddObject(newStargateEH);
 	//AddMarker(newStargateEH,0);
+	*/
 
 	return newStargate;
 }
+
+SpaceObject* ResourceManager::MakeStargateEH()
+{
+	SpaceObject* newStargateEH = new SpaceObject();//delete is in GamePhysics::ClearObjects
+	SceneNode * sceneNodeEH;
+
+	sceneNodeEH = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/sg1eh.irrmesh"));
+	sceneNodeEH->setScale(vector3df(70.0f));
+	newStargateEH->SetNode(sceneNodeEH);
+
+	newStargateEH->SetFloatProperty(SpaceObject::MASS,0);
+	newStargateEH->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,70.0);
+	newStargateEH->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+	newStargateEH->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+	newStargateEH->SetIntProperty(SpaceObject::TRAVEL_TO_X,-100000);//not working
+	newStargateEH->SetIntProperty(SpaceObject::TRAVEL_TO_Y,0);
+	newStargateEH->SetIntProperty(SpaceObject::STARGATE,2);//TODO: ????
+
+	//newStargateEH->SetLinkedParams(newStargate,vector3d(13.0,0,0),0);
+	newStargateEH->SetName(L"stargate event horizon");
+	newStargateEH->SetIntProperty(SpaceObject::VISIBLE_TO_PLAYER,0);
+
+	physics->AddObject(newStargateEH);
+	//AddMarker(newStargateEH,0);
+
+	return newStargateEH;
+}
+
 
 SpaceObject* ResourceManager::MakeMarker()
 {
@@ -4036,7 +4115,7 @@ SpaceObject* ResourceManager::MakeProjectile()
 	
 	SceneNode * sceneNode;
 
-	sceneNode = sceneManager->addSphereSceneNode((f32)0.2,5);
+	sceneNode = sceneManager->addSphereSceneNode((f32)0.05,5);
 	if (sceneNode)
 	{
 		//sceneNode->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/planet0.bmp"));
@@ -4044,7 +4123,7 @@ SpaceObject* ResourceManager::MakeProjectile()
 	newProjectile->SetNode(sceneNode);
 
 	//newProjectile->SetNode(0);
-	newProjectile->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0.2);
+	newProjectile->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0.05);
 	newProjectile->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NAVIGATION);
 	newProjectile->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 	newProjectile->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,1);
@@ -6567,6 +6646,8 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	vector2ds galaxyQuadrant;
 	SpaceObject* outputWormhole;
 
+	BreakAutopilot();
+
 	inputVector = position-wormhole->GetPosition();
 	inputGalaxyQuadrant = physics->GetGalaxyQuadrant();
 	inputGalaxyCoordinates = physics->GetGalaxyCoordinatesOfCenter();
@@ -6635,6 +6716,8 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 	f64 rotAngle;
 	SpaceObject* outputStargate;
 
+	BreakAutopilot();
+
 	stargateAxis.X = stargate->GetDirection().Y;
 	stargateAxis.Y = -stargate->GetDirection().X;
 
@@ -6650,7 +6733,8 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 	galaxyCoordinates = exitTo->GetGalaxyCoordinates();//get galaxy coords
 	physics->GetRoot()->GoStarSystem(exitTo);//force game to go player to this star systems (includes generation of planets and so on)
 
-	outputStargate = physics->GetFirstObject(STARGATE,2);
+	//outputStargate = physics->GetFirstObject(STARGATE,2);
+	outputStargate = physics->GetFirstObject(STARGATE,1);
 		
 	//toRotate = (outputWormhole->GetRotation()-inputDirection)*CoeffDegreesToRadians;
 
@@ -6665,9 +6749,21 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 		newSpeed.Z = 0;
 
 		speed = newSpeed+outputStargate->GetSpeed();
-		position = outputStargate->GetPosition()+speed*0.01-outputStargateAxis*fallLocation;
 		AddFloatProperty(SpaceObject::ROTATION_ANGLE,rotAngle);
 		
+		physics->GetRoot()->UseSceneManager(DG_Game::VIEW_REALSPACE);
+		SpaceObject* eventHorizon = physics->GetRoot()->GetResourceManager()->MakeStargateEH();
+		eventHorizon->SetLinkedParams(outputStargate,vector3d(13.0,0,0),0);
+		eventHorizon->SetIntProperty(SpaceObject::VISIBLE_TO_PLAYER,1);
+		eventHorizon->SetIntProperty(SpaceObject::CURRENT_PROCESS,SpaceObject::PROCESS_STARGATE_OPENING);
+		eventHorizon->SetIntProperty(SpaceObject::TRAVEL_TO_X,-100000);
+		//eventHorizon->SetIntProperty(SpaceObject::TRAVEL_TO_Y,coordinates.Y);
+		eventHorizon->SetFloatProperty(SpaceObject::PROCESS_START_TIME,physics->globalTime-1);//TODO: remove this cheat
+		eventHorizon->UpdatePhysics(0);
+
+		position = eventHorizon->GetPosition()+speed*0.01-outputStargateAxis*fallLocation;
+
+
 	}
 	else
 	{
@@ -6677,10 +6773,12 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 	}
 	prevPosition = position;
 	
+	/*
 	outputStargate->SetIntProperty(VISIBLE_TO_PLAYER,1);
 	outputStargate->SetIntProperty(CURRENT_PROCESS,PROCESS_STARGATE_OPENING);
 	outputStargate->SetIntProperty(TRAVEL_TO_X,-100000);
 	outputStargate->SetFloatProperty(PROCESS_START_TIME,physics->globalTime-1);//TODO: remove this cheat
+	*/
 
 
 	physics->Activate();
