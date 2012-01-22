@@ -256,6 +256,9 @@ coding demo1:
 120120: CHG: better collision calculation with wormholes and stargates
 120120: CHG: stargate event horizon now created and destroyed
 120120: CHG: SpaceObjects all arrayed properties default init to 0
+120121: FIX: stargate duplicate open removed
+120122: ADD: wormhole opening on approach and closing on departure of objects
+120122: ADD: HyperSpace (works, but completely empty)
 
 
 
@@ -315,21 +318,27 @@ DONE:
 + autopilot go-to-orbit-at-that-point
 + stargate system : "killing" non-player objects
 + wormhole network : "killing" non-player objects
++ wormhole network : opening on approaching mass and closing - by process
 
 
 TODO:
 
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
-- stargate system
-  -! duplicate open
-  - better mesh and textures
-  - defence force-field around gate object
 - HyperSpace
+  - autopilot
+  - location of stars (unnamed?)
+  ? location of planets (just location "gravity well" or so)
+  - approx map
+  - entering and exiting by hypergate/jumpsphere/etc
+  - distorted relation to RealSpace (? how distorted?)
+- BUG: projectiles left in interstellar space are flying strange
 - weapons
   - hit objects
+- stargate system
+  - better mesh and textures
+  - defence force-field around gate object
 - wormhole network
-  - animation: opening on approaching mass and closing - by process
   .? advanced triangulation for building wormhole net
 - map
   ? grid in metres for detailed zooms
@@ -430,8 +439,7 @@ MouseClick Left - autopilot fly-to
 MouseClick Right - autopilot FTL-to
 MouseClick Middle - autopilot fly-to-orbit
 X - (DEBUG) dump galaxy coordinates into log
-J - (DEBUG) teleport to wormhole with direction, closest to direction of the ship
-H - (DEBUG) teleport to random wormhole and slow fall into
+H - jump to HyperSpace
 
 CONTROL on map:
 W/A/S/D - pan
@@ -450,6 +458,19 @@ X - (DEBUG) dump galaxy coordinates into log
 
 CONTROL on QuasiSpace (PlusMinus):
 X - (DEBUG) dump PlusMinus debug info into log
+
+CONTROL on HyperSpace
+H - jump back to RealSpace
+A/D - rotate
+W/S - thrust
+1/2/3/4/5/6 - different thrust levels (1 - highest, 6 - lowest)
+Space - breaking (autopilot) relative to distant stars
+ESC - stop autopilot
+Up/Down - zoom
+MouseWheel - zoom
+F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
+
+
 
 
 */
@@ -494,6 +515,9 @@ using namespace irr;
 
 //Light-year, exact value
 #define LIGHTYEAR 9460730472.5808
+
+//How much distances in HyperSpace smaller than in RealSpace
+#define HYPERSPACE_SCALE 50000.0
 
 //Radius of star system in light-years (used for enter star system check, for limit orbits of planets and so on)
 #define STAR_SYSTEM_RADIUS 0.1
@@ -635,6 +659,7 @@ class MapObject;
 class MapSpaceView;
 class FTLView;
 class QuasiSpaceView;
+class HyperSpaceView;
 class PlayerShip;
 class Galaxy;
 class GalaxyStarSystem;
@@ -816,6 +841,7 @@ class SpaceObject {
 			MOTION_NAVIGATION,  //Object is self-navigating
 			MOTION_FTL,         //Object moves at FTL
 			MOTION_PLUSMINUS,   //Object moves at PlusMinus
+			MOTION_HYPER,       //Object moves in HyperSpace (only for PlayerShip?)
 		};
 
 		enum ControlType {
@@ -834,7 +860,8 @@ class SpaceObject {
 			WORMHOLE,            //bool: 0 - false, 1 - true
 			TRAVEL_TO_X,         //s32, x coordinate of wormhole or stargate travel
 			TRAVEL_TO_Y,         //s32, y coordinate --- !! ----
-			STARGATE,            //bool: 0 - false, 1 - true
+			STARGATE,            //s32, 0 - none, 1 - gate, 2 - event horizon
+			ACTIVE,              //bool: 0 - false, 1 - true  (only for stargate)
 			CURRENT_PROCESS,     //s32, see enum ProcessType
 
 			INT_PROPERTIES_COUNT,//Only for array allocation
@@ -874,7 +901,8 @@ class SpaceObject {
 			PROCESS_STARGATE_OPENING,    //stargate opens, 1 second
 			PROCESS_STARGATE_WAITING,    //stargate waiting object to pass, 15 seconds
 			PROCESS_STARGATE_CLOSING,    //stargate closing, 1 second
-			PROCESS_DELAYED_DELETION,    //disappear at start time
+			PROCESS_DELAYED_DELETION,    //delete object at process-start-time
+			PROCESS_WORMHOLE_RESIZING,   //wormhole check and opening/closing (up to GRAVITY_MIN_RADIUS, exponential by time), start time is time of next check
 		};
 
 		SpaceObject();//Constuctor
@@ -1017,6 +1045,7 @@ class GamePhysics {
 
 		void GoInterstellar();
 		void GoStarSystem();
+		void GoHyperSpace();
 
 		void Activate();
 
@@ -1051,6 +1080,7 @@ class DG_Game {
 			VIEW_SECTOR_MAP,
 			VIEW_FTL,
 			VIEW_QUASISPACE,
+			VIEW_HYPERSPACE,
 		};
 
 		int Init(int Count, char **Arguments);
@@ -1072,6 +1102,8 @@ class DG_Game {
 
 		void GoInterstellar();
 		void GoStarSystem(GalaxyStarSystem* toStarSystem);
+		void GoHyperSpace();
+		void BreakHyperSpace();
 
 		void SaveGame();
 		void LoadGame();
@@ -1102,6 +1134,7 @@ class DG_Game {
 		MapSpaceView* SectorMap;
 		FTLView* FTLSpace;
 		QuasiSpaceView* QuasiSpace;
+		HyperSpaceView* HyperSpace;
 
 		SpaceObject::MotionType prevPlayerMotion;
 
@@ -1156,6 +1189,7 @@ class ResourceManager
 		gui::IGUITab* Map_HUD;
 		gui::IGUITab* FTL_HUD;
 		gui::IGUITab* QuasiSpace_HUD;
+		gui::IGUITab* HyperSpace_HUD;
 };
 
 
@@ -1300,11 +1334,33 @@ public:
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
-
+	
 private:
 	PlayerShip* playerShip;
 	SceneNode* playerShipNode;
 	scene::ICameraSceneNode* camera;
+};
+
+//HyperSpaceView - to render fly in HyperSpace
+class HyperSpaceView : public GameView
+{
+public:
+	void Init();
+	void Activate();
+	void Update(f64 frameDeltaTime);
+	void Close();
+
+	f64 GetCameraDistance() {return cameraDistance;}
+	f64 cameraDistanceDegree;
+
+	void UpdateCameraDistance();
+
+private:
+	f64 cameraDistance;
+
+	PlayerShip* playerShip;
+	scene::ICameraSceneNode* camera;
+	gui::IGUIStaticText* simpleTextToDisplay;
 };
 
 //PlayerShip - hold all information about player and his ship
@@ -1316,6 +1372,8 @@ public:
 	vector2d GetGalaxyCoordinates() {return galaxyCoordinates;}
 	vector2ds GetGalaxyQuadrant() {return galaxyQuadrant;}
 	f64 GetControlThrust() {return controlThrust;}
+
+	void SetGalaxyCoordinates(vector2d newCoords) {galaxyCoordinates=newCoords;}
 
 	void UpdateGalaxyCoordinates();
 
@@ -2447,6 +2505,7 @@ void SpaceObject::UpdateMotionOnFTL(f64 time)
 	{
 		wprintf(L"Exit from FTL by timer\r\n");
 		BreakFTL(100.0);
+		//BreakFTL(0.0);//DEBUG
 	}
 	delete checkFTL; //new in CheckFTLBreak()
 
@@ -2516,6 +2575,7 @@ void SpaceObject::UpdatePhysics(f64 time)
 	case MOTION_NONE:
 		//do nothing;
 		break;
+	case MOTION_HYPER:
 	case MOTION_NAVIGATION:
 		{
 			//vector3d prevPosition;
@@ -2654,6 +2714,8 @@ void SpaceObject::UpdatePhysics(f64 time)
 				scale = 0.0;
 				SetIntProperty(VISIBLE_TO_PLAYER,0);
 				SetIntProperty(CURRENT_PROCESS,PROCESS_NONE);
+				if (orbitingObject)
+					orbitingObject->SetIntProperty(SpaceObject::ACTIVE,0);
 				Delete();
 			}
 		}
@@ -2662,6 +2724,53 @@ void SpaceObject::UpdatePhysics(f64 time)
 		{
 			if (physics->globalTime>GetFloatProperty(PROCESS_START_TIME))
 				Delete();
+		}
+		break;
+	case PROCESS_WORMHOLE_RESIZING:
+		{
+			if (physics->globalTime>GetFloatProperty(PROCESS_START_TIME))
+			{
+				f64 radius, maxRadius;
+				core::array<SpaceObject*> foundObjects;
+				physics->GetObjectsAtDistance(&foundObjects,position,100);//in 100 units range
+				maxRadius = 0.01;
+				for (u32 i = 0;i<foundObjects.size();i++)
+				{
+					if (foundObjects[i]!=this)
+					{
+						radius = foundObjects[i]->GetFloatProperty(GEOMETRY_RADIUS);
+						if (radius>maxRadius) maxRadius = radius;
+					}
+				}
+				SetFloatProperty(GRAVITY_MIN_RADIUS,maxRadius*10);
+				/*
+				radius = GetFloatProperty(GEOMETRY_RADIUS);
+				if (radius<>maxRadius
+				*/
+				SetFloatProperty(PROCESS_START_TIME,physics->globalTime+1);
+
+			}
+
+			if (GetFloatProperty(GEOMETRY_RADIUS)!=GetFloatProperty(GRAVITY_MIN_RADIUS))
+			{
+				f64 radius = GetFloatProperty(GEOMETRY_RADIUS);
+				f64 needRadius = GetFloatProperty(GRAVITY_MIN_RADIUS);
+				if (radius<needRadius)
+				{
+					radius*=exp(time);
+					if (radius>needRadius)
+						radius = needRadius;
+				}
+				else
+				{
+					radius*=exp(-time);
+					if (radius<needRadius)
+						radius = needRadius;
+				}
+				sceneNode->setScale(vector3df((f32)(radius*1.429)));
+				SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);//Distance to check passing thru circle
+
+			}
 		}
 		break;
 	}
@@ -3465,6 +3574,12 @@ void GamePhysics::Activate()
 	calcCollisions = true;
 }
 
+void GamePhysics::GoHyperSpace()
+{
+	ClearObjects();//listObjects.clear();
+	isInterstellar = false;
+}
+
 void GamePhysics::ClearObjects()
 {
 	for (u32 i=0;i<listObjects.size();i++)
@@ -3694,7 +3809,7 @@ void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
 		return;
 	}
 
-	if (destGate->GetIntProperty(SpaceObject::CURRENT_PROCESS)!=SpaceObject::PROCESS_NONE)
+	if (destGate->GetIntProperty(SpaceObject::ACTIVE)!=0)
 	{
 		wprintf(L" ** Stargate instantly respond that they are busy\r\n");
 		return;
@@ -3732,6 +3847,8 @@ void GamePhysics::SendStargateAddress(SpaceObject* sender, u64 address)
 	destGate->SetIntProperty(SpaceObject::TRAVEL_TO_Y,coordinates.Y);
 	destGate->SetFloatProperty(SpaceObject::PROCESS_START_TIME,globalTime);
 	*/
+	destGate->SetIntProperty(SpaceObject::ACTIVE,1);
+
 	gameRoot->UseSceneManager(DG_Game::VIEW_REALSPACE);
 	SpaceObject* eventHorizon = gameRoot->GetResourceManager()->MakeStargateEH();
 	eventHorizon->SetLinkedParams(destGate,vector3d(13.0,0,0),0);
@@ -3776,6 +3893,7 @@ void ResourceManager::Setup(IrrlichtDevice* newDevice, scene::ISceneManager* new
 	RealSpace_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,2);
 	Map_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,3);
 	QuasiSpace_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,4);
+	HyperSpace_HUD = newDevice->getGUIEnvironment()->addTab(core::rect<s32>(0, 0, 1000, 700),0,5);
 
 	//RealSpace_HUD->setVisible(false);
 
@@ -3992,14 +4110,15 @@ SpaceObject* ResourceManager::MakeWormhole()
 
 	sceneNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/wormhole4.irrmesh"));
 
-	sceneNode->setScale(vector3df(50.0f));
+	sceneNode->setScale(vector3df(0.1429f));
 	newWormhole->SetNode(sceneNode);
 
 	newWormhole->SetFloatProperty(SpaceObject::MASS,0);
-	newWormhole->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,50.0*0.7);//Distance to check passing thru circle
+	newWormhole->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0.1);//Distance to check passing thru circle
 	newWormhole->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 	newWormhole->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
 	newWormhole->SetIntProperty(SpaceObject::WORMHOLE,1);
+	newWormhole->SetIntProperty(SpaceObject::CURRENT_PROCESS,SpaceObject::PROCESS_WORMHOLE_RESIZING);
 
 	physics->AddObject(newWormhole);
 	AddMarker(newWormhole,0);
@@ -4223,6 +4342,8 @@ gui::IGUITab* ResourceManager::GetHUD(DG_Game::ViewType view)
 		return RealSpace_HUD;
 	case DG_Game::VIEW_SECTOR_MAP:
 		return Map_HUD;
+	case DG_Game::VIEW_HYPERSPACE:
+		return HyperSpace_HUD;
 	default:
 		return 0;
 	}
@@ -4235,6 +4356,7 @@ void ResourceManager::ActivateHUD(DG_Game::ViewType view)
 	Map_HUD->setVisible(view==DG_Game::VIEW_SECTOR_MAP);
 	FTL_HUD->setVisible(view==DG_Game::VIEW_FTL);
 	QuasiSpace_HUD->setVisible(view==DG_Game::VIEW_QUASISPACE);
+	HyperSpace_HUD->setVisible(view==DG_Game::VIEW_HYPERSPACE);
 	return;
 }
 
@@ -4603,7 +4725,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 					DisplayMessage(L"PlusMinus Engine activated by Plus and Minus at once");
 				}
 
-				gamePhysics->GoInterstellar();
+				//gamePhysics->GoInterstellar();
 				gameRoot->GoInterstellar();
 
 				//gameRoot->SwitchView(DG_Game::VIEW_QUASISPACE);
@@ -4615,27 +4737,17 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 
 
+		/*
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_J))
-		{
-			/*
-			GalaxyStarSystem* jumpTo;
-			jumpTo = gameRoot->GetGalaxy()->DebugJump();
-			if (jumpTo)
-			{
-				vector3d tempPos = playerShip->GetPosition();
-				gameRoot->GoStarSystem(jumpTo);
-				playerShip->SetPosition(tempPos);
-				
-				playerShip->UpdateGalaxyCoordinates();
-				gameRoot->GetGalaxy()->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
-				jumpTo->unlock(0);//free if not stored somewhere else
-			}
-			*/
 			gamePhysics->DebugJumpToWormhole(1);
-
-		}
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_H))
 			gamePhysics->DebugJumpToWormhole(0);
+		*/
+		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_H))
+		{
+			gameRoot->GoHyperSpace();
+			return;
+		}
 
 		if(eventReceiver->IsKeyDown(irr::KEY_UP))
 		{
@@ -5847,6 +5959,188 @@ void QuasiSpaceView::Close()
 
 
 //#########################################################################
+//HyperSpaceView
+
+void HyperSpaceView::Init()
+{
+	resourceManager = gameRoot->GetResourceManager();
+
+	videoDriver = resourceManager->GetVideoDriver();
+	device = resourceManager->GetDevice();
+	eventReceiver = resourceManager->GetEventReceiver();
+	viewHUD = resourceManager->GetHUD(DG_Game::VIEW_HYPERSPACE);
+
+	sceneManager->clear();
+
+	resourceManager->SetSceneManager(sceneManager);
+
+	simpleTextToDisplay = device->getGUIEnvironment()->addStaticText(
+		L"Diagnostic very-very-very-very-very-very-very-very-long 1\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
+	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 0, 0));
+
+}
+
+void HyperSpaceView::Activate()
+{
+	playerShip = gameRoot->GetPlayerShip();
+
+	resourceManager->SetSceneManager(sceneManager);
+	sceneManager->clear();
+	resourceManager->LoadNodesForShip((SpaceObject*)playerShip);
+
+	camera = sceneManager->addCameraSceneNode();
+	if (camera)
+	{
+		camera->setPosition(vector3df(0,0,-20.f));
+		camera->setTarget(vector3df(0));
+		camera->setFOV(0.7f);
+	}
+}
+
+void HyperSpaceView::Update(f64 frameDeltaTime)
+{
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
+	{
+	}
+
+	if(eventReceiver->IsKeyDown(irr::KEY_KEY_W))
+		playerShip->SetControl(playerShip->GetControlThrust(),SpaceObject::CONTROL_THRUST_RELATIVE);
+	else if(eventReceiver->IsKeyDown(irr::KEY_KEY_S))
+		playerShip->SetControl(-playerShip->GetControlThrust(),SpaceObject::CONTROL_THRUST_RELATIVE);
+	else
+		playerShip->SetControl(0.0,SpaceObject::CONTROL_THRUST_ABSOLUTE);
+
+	if(eventReceiver->IsKeyDown(irr::KEY_KEY_A))
+		playerShip->SetControl(1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
+	else if(eventReceiver->IsKeyDown(irr::KEY_KEY_D))
+		playerShip->SetControl(-1.0,SpaceObject::CONTROL_ROTATION_SPEED_RELATIVE);
+	else
+		playerShip->SetControl(0,SpaceObject::CONTROL_ROTATION_SPEED_ABSOLUTE);
+
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_1))
+		playerShip->SetControlThrust(1.0); //playerThrust = 1.0;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_2))
+		playerShip->SetControlThrust(0.1); //playerThrust = 0.1;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_3))
+		playerShip->SetControlThrust(0.01); //playerThrust = 0.01;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_4))
+		playerShip->SetControlThrust(0.001); //playerThrust = 0.001;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_5))
+		playerShip->SetControlThrust(0.0001); //playerThrust = 0.0001;
+	if(eventReceiver->IsKeyPressed(irr::KEY_KEY_6))
+		playerShip->SetControlThrust(0.00001); //playerThrust = 0.00001;
+
+	if(eventReceiver->IsKeyPressed(irr::KEY_F1))
+		gamePhysics->SetTimeSpeed(1.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F2))
+		gamePhysics->SetTimeSpeed(10.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F3))
+		gamePhysics->SetTimeSpeed(100.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F4))
+		gamePhysics->SetTimeSpeed(1000.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F5))
+		gamePhysics->SetTimeSpeed(10000.0);
+	if(eventReceiver->IsKeyPressed(irr::KEY_F6))
+		gamePhysics->SetTimeSpeed(100000.0);
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_Z))
+	{
+		AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+		ins->instruction = AutopilotInstruction::AP_SETSPEED;
+		ins->vector1 = vector2d(0);
+		playerShip->AddAutopilot(ins);
+	}
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_H))
+	{
+		gameRoot->BreakHyperSpace();
+		return;
+	}
+
+
+	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
+		playerShip->BreakAutopilot();
+
+
+	if(eventReceiver->IsKeyDown(irr::KEY_UP))
+	{
+		cameraDistanceDegree+=frameDeltaTime*2000.0;
+		UpdateCameraDistance();
+	}
+
+	if(eventReceiver->IsKeyDown(irr::KEY_DOWN))
+	{
+		cameraDistanceDegree-=frameDeltaTime*2000.0;
+		UpdateCameraDistance();
+	}
+
+
+	if(eventReceiver->IsKeyPressed((irr::EKEY_CODE)KEY_PSEUDO_MOUSEWHEELUP))
+	{
+		cameraDistanceDegree-=200;
+		UpdateCameraDistance();
+	}
+	if(eventReceiver->IsKeyPressed((irr::EKEY_CODE)KEY_PSEUDO_MOUSEWHEELDOWN))
+	{
+		cameraDistanceDegree+=200;
+		UpdateCameraDistance();
+	}
+
+	{
+		text_string debug_text(L"HyperSpace\r\nSpeed: ");
+		f64 playerSpeed;
+
+		playerSpeed = playerShip->GetSpeed().getLength();
+		debug_text += playerSpeed;
+		debug_text += L" km/s\r\n";
+		debug_text += (playerSpeed/LIGHTSPEED);
+		debug_text += L" c; ";
+		debug_text += L"\r\n";
+		debug_text += playerShip->GetAutopilotInfo();
+		simpleTextToDisplay->setText(debug_text.c_str());
+	}
+
+	gamePhysics->Update(frameDeltaTime);
+	gamePhysics->UpdateNodes(playerShip);
+
+	videoDriver->beginScene(true, true, video::SColor(255,250,120,0));
+	sceneManager->drawAll();
+	device->getGUIEnvironment()->drawAll();
+	videoDriver->endScene();
+}
+
+void HyperSpaceView::Close()
+{
+	sceneManager->drop();
+}
+
+
+void HyperSpaceView::UpdateCameraDistance()
+{
+	if (cameraDistanceDegree<-100)
+		cameraDistanceDegree=-100;
+	if (cameraDistanceDegree>6500)
+		cameraDistanceDegree=6500;
+
+	cameraDistance = 30.0*exp(cameraDistanceDegree*0.003);
+
+	if (cameraDistance<50.0f)
+	{//modified mainly for wormholes
+		camera->setFarValue(100.f);
+		camera->setNearValue(1.f);
+	}
+	else
+	{
+		camera->setFarValue((f32)(cameraDistance*2.0));
+		camera->setNearValue((f32)(cameraDistance*0.5));
+	}
+	gamePhysics->UpdateMarkers(cameraDistance);
+
+	camera->setPosition(vector3df(0,0,-(f32)cameraDistance));//update camera look-from point
+}
+
+
+//#########################################################################
 //DG_Game
 
 
@@ -5938,7 +6232,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	//wholeGalaxy->AddNearStarSystems(gamePhysics);
 
 	RealSpace->Init();
-	gamePhysics->GoStarSystem();
+	//gamePhysics->GoStarSystem();
 	GoStarSystem(currentStarSystem);
 
 	playerShip->SetPosition(vector3d(LIGHTYEAR*0.07,0,0));
@@ -5986,6 +6280,11 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	QuasiSpace->SetPhysics(gamePhysics);
 	QuasiSpace->Init();
 
+	HyperSpace = new HyperSpaceView();//delete in DG_Game::Close
+	HyperSpace->SetRoot(this);
+	HyperSpace->SetSceneManager(smgr->createNewSceneManager()); //drop in QuasiSpace::Close
+	HyperSpace->SetPhysics(gamePhysics);
+	HyperSpace->Init();
 
 	lastFPS = -1;
 
@@ -6040,6 +6339,9 @@ void DG_Game::Update() {
 		case SpaceObject::MOTION_FTL:
 			SwitchView(VIEW_FTL);
 			break;
+		case SpaceObject::MOTION_HYPER:
+			SwitchView(VIEW_HYPERSPACE);
+			break;
 		default:
 			SwitchView(VIEW_REALSPACE);
 			break;
@@ -6050,14 +6352,14 @@ void DG_Game::Update() {
 	//Game physics is updated via view due to view-dependency behaviour of physics (i.e. physics not updated in case of viewing map)
 	activeView->Update(frameDeltaTime);
 
-
-	//if (playerShip->GetMotionType()==SpaceObject::MOTION_PLUSMINUS)
-	if (playerShip->GetIntProperty(SpaceObject::MOTION_TYPE)==SpaceObject::MOTION_PLUSMINUS)
+	switch(playerShip->GetIntProperty(SpaceObject::MOTION_TYPE))
 	{
+	case SpaceObject::MOTION_PLUSMINUS:
 		playerShip->UpdateQuasiSpace(frameDeltaTime,wholeGalaxy);
-	}
-	else
-	{
+		break;
+	case SpaceObject::MOTION_HYPER:
+		break;
+	default:
 		playerShip->UpdateGalaxyCoordinates();
 
 		//Check that player reach border some star system and so this system should be loaded
@@ -6097,20 +6399,21 @@ void DG_Game::Update() {
 				GoStarSystem(nearStarSystem);
 			}
 		}
-	}
 
-	//Check that player fly too far from star system and it (system) could be unloaded
-	if (gamePhysics->CheckLeaveStarSystem())
-	{
+		//Check that player fly too far from star system and it (system) could be unloaded
+		if (gamePhysics->CheckLeaveStarSystem())
 		{
-			text_string message = L"Departed star system ";
-			message += currentStarSystem->GetName();
-			RealSpace->DisplayMessage(message);
-		}
-		gamePhysics->GoInterstellar();
+			{
+				text_string message = L"Departed star system ";
+				message += currentStarSystem->GetName();
+				RealSpace->DisplayMessage(message);
+			}
+			//gamePhysics->GoInterstellar();
 
-		//if (IsViewActive(VIEW_REALSPACE))
-		GoInterstellar();
+			//if (IsViewActive(VIEW_REALSPACE))
+			GoInterstellar();
+		}
+		break;
 	}
 
 	s32 fps = driver->getFPS();
@@ -6121,12 +6424,6 @@ void DG_Game::Update() {
 		tmp += driver->getName();
 		tmp += L"] fps: ";
 		tmp += fps;
-/*		tmp += L", ";
-		tmp += playerShip->GetPosition().X;
-		tmp += L", ";
-		tmp += playerShip->GetPosition().Y;
-		tmp += L", ";
-		tmp += cameraDistance;*/
 
 		device->setWindowCaption(tmp.c_str());
 		lastFPS = fps;
@@ -6149,11 +6446,13 @@ void DG_Game::Close() {
 	FTLSpace->Close();
 	RealSpace->Close();
 	SectorMap->Close();
+	HyperSpace->Close();
 
 	delete RealSpace;//new in DG_Game::Init
 	delete SectorMap;//new in DG_Game::Init
 	delete FTLSpace;//new in DG_Game::Init
 	delete QuasiSpace;//new in DG_Game::Init
+	delete HyperSpace;//new in DG_Game::Init
 	delete resourceManager;//new in DG_Game::Init
 
 	for (u32 i=0;i<viewStack.size();i++)
@@ -6190,7 +6489,7 @@ void DG_Game::ActivateFTL()
 	activeView = FTLSpace;
 }*/
 
-
+//playerGalaxyCoordinates is root for locationing
 void DG_Game::GoInterstellar()
 {
 	vector2d playerGalaxyCoordinates;
@@ -6198,6 +6497,8 @@ void DG_Game::GoInterstellar()
 	vector2d quadrantGalaxyCoordinates;
 	vector3d playerLocalPosition;
 	f64 cameraDistance = RealSpace->cameraDistanceDegree;
+
+	gamePhysics->GoInterstellar();
 
 	if (currentStarSystem)
 	{
@@ -6222,7 +6523,6 @@ void DG_Game::GoInterstellar()
 
 	gamePhysics->SetGalaxyCoordinatesOfCenter(quadrantGalaxyCoordinates);
 	gamePhysics->SetGalaxyQuadrant(quadrant);
-	gamePhysics->GoInterstellar();
 
 	playerGalaxyCoordinates-=quadrantGalaxyCoordinates;
 	playerLocalPosition.X = playerGalaxyCoordinates.X*LIGHTYEAR;
@@ -6288,6 +6588,34 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	//wholeGalaxy->AddNearStarSystems(gamePhysics);
 }
 
+void DG_Game::GoHyperSpace()
+{
+	f64 koef = LIGHTYEAR/HYPERSPACE_SCALE;
+	vector2d playerGalaxyCoordinates = playerShip->GetGalaxyCoordinates();
+	vector3d playerHyperSpacePos = vector3d(playerGalaxyCoordinates.X*koef,playerGalaxyCoordinates.Y*koef,0);
+
+	playerShip->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_HYPER);
+	gamePhysics->GoHyperSpace();
+
+	playerShip->SetPosition(playerHyperSpacePos);
+	playerShip->SetSpeed(vector3d(0));
+
+	gamePhysics->Activate();
+}
+
+void DG_Game::BreakHyperSpace()
+{
+	f64 koef = HYPERSPACE_SCALE/LIGHTYEAR;
+	vector3d playerHyperSpacePos = playerShip->GetPosition();
+	vector2d playerGalaxyCoordinates = vector2d(playerHyperSpacePos.X*koef,playerHyperSpacePos.Y*koef);
+
+	playerShip->SetGalaxyCoordinates(playerGalaxyCoordinates);
+	playerShip->SetSpeed(vector3d(0));
+	playerShip->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NAVIGATION);
+
+	GoInterstellar();
+}
+
 void DG_Game::InternalAcviateView(ViewType newView)
 {
 	//Workaround for memory leak somewhere inside Irrlicht
@@ -6321,6 +6649,12 @@ void DG_Game::InternalAcviateView(ViewType newView)
 	case VIEW_QUASISPACE:
 		QuasiSpace->Activate();
 		activeView = QuasiSpace;
+		break;
+	case VIEW_HYPERSPACE:
+		HyperSpace->Activate();
+		HyperSpace->cameraDistanceDegree = RealSpace->cameraDistanceDegree;
+		HyperSpace->UpdateCameraDistance();
+		activeView = HyperSpace;
 		break;
 	}
 	resourceManager->ActivateHUD(newView);
@@ -6644,6 +6978,7 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	vector2d inputGalaxyCoordinates;
 	vector2ds inputGalaxyQuadrant;
 	vector2ds galaxyQuadrant;
+	f64 radius, radius2;
 	SpaceObject* outputWormhole;
 
 	BreakAutopilot();
@@ -6651,6 +6986,8 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	inputVector = position-wormhole->GetPosition();
 	inputGalaxyQuadrant = physics->GetGalaxyQuadrant();
 	inputGalaxyCoordinates = physics->GetGalaxyCoordinatesOfCenter();
+	radius = wormhole->GetFloatProperty(GEOMETRY_RADIUS);
+	radius2 = wormhole->GetFloatProperty(GRAVITY_MIN_RADIUS);
 	//inputDirection = wormhole->GetRotation();
 
 	wprintf(L"DG: player falls into %ws\r\n",wormhole->GetName().c_str());
@@ -6671,6 +7008,9 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 	if (outputWormhole)
 	{
 		position = outputWormhole->GetPosition()+inputVector;//TODO: bettwe position after jump
+		outputWormhole->SetFloatProperty(GEOMETRY_RADIUS,radius*0.9999);//this for update wormhole geometry
+		outputWormhole->SetFloatProperty(GRAVITY_MIN_RADIUS,radius2);
+		outputWormhole->UpdatePhysics(0);
 	}
 	else
 	{
@@ -6678,7 +7018,7 @@ void PlayerShip::FallIntoWormhole(SpaceObject* wormhole)
 		//Location is approximate position, direction is vector between stars, distance - wormholeDistance
 		//+ Great bonus for player
 		vector2d direction;
-		wprintf(L"Whoa! Great bonus for discoveing one-way waypoint!!\r\n");
+		wprintf(L"Whoa! Great bonus for discoveing one-way wormhole!!\r\n");
 
 		direction = inputGalaxyCoordinates - exitTo->GetGalaxyCoordinates();
 		direction.normalize();
@@ -6762,6 +7102,7 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 		eventHorizon->UpdatePhysics(0);
 
 		position = eventHorizon->GetPosition()+speed*0.01-outputStargateAxis*fallLocation;
+		outputStargate->SetIntProperty(SpaceObject::ACTIVE,1);
 
 
 	}
@@ -6801,14 +7142,14 @@ void PlayerShip::ScanSpace()
 			found = true;
 			if (foundObjects[i]->GetIntProperty(STARGATE)==1)
 			{
-				wprintf(L" Scaner found %ws, it has address %ws\r\n",foundObjects[i]->GetName().c_str(),physics->GetRoot()->GetGalaxy()->StargateAddress2text(physics->GetRoot()->GetCurrentSystem()->GetStargateAddress()).c_str());
+				wprintf(L" Scanner found %ws, it has address %ws\r\n",foundObjects[i]->GetName().c_str(),physics->GetRoot()->GetGalaxy()->StargateAddress2text(physics->GetRoot()->GetCurrentSystem()->GetStargateAddress()).c_str());
 				continue;
 			}
-			wprintf(L" Scaner found %ws\r\n",foundObjects[i]->GetName().c_str());
+			wprintf(L" Scanner found %ws\r\n",foundObjects[i]->GetName().c_str());
 		}
 	}
 	if (!found)
-		wprintf(L" Scaner not found anything\r\n");
+		wprintf(L" Scanner not found anything\r\n");
 
 }
 
