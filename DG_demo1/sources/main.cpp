@@ -259,6 +259,8 @@ coding demo1:
 120121: FIX: stargate duplicate open removed
 120122: ADD: wormhole opening on approach and closing on departure of objects
 120122: ADD: HyperSpace (works, but completely empty)
+120123: ADD: stars grav-wells in HyperSpace
+120123: ADD: GFX in FTL (not very nice at high timespeed)
 
 
 
@@ -326,12 +328,20 @@ TODO:
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - HyperSpace
-  - autopilot
-  - location of stars (unnamed?)
-  ? location of planets (just location "gravity well" or so)
-  - approx map
+  + location of stars
+  - scaner to recognize stars
+  - limit zoom
+  - recalc stars on moving thru Galaxy
+  - drift of speed angle (+increase of drift on near-lightspeed)
+  - timer-autopilot (without markers)
+  ? location of planets (just location "gravity well" or so) (need remade of starsystemgenerator)
+  ? mass-depends gravity wells of stars
+  - approx map(?)
   - entering and exiting by hypergate/jumpsphere/etc
   - distorted relation to RealSpace (? how distorted?)
+- FTL
+  . nice graphic
+  - "waterdrop"-shape shield around ship
 - BUG: projectiles left in interstellar space are flying strange
 - weapons
   - hit objects
@@ -341,6 +351,7 @@ TODO:
 - wormhole network
   .? advanced triangulation for building wormhole net
 - map
+  - show stars on other locations in galaxy
   ? grid in metres for detailed zooms
 - save & load
   + global position and speed
@@ -395,6 +406,7 @@ m remove overlapping of labels on map (how?)
 -3SpaceShip - derivative to SpaceObject with virtual UpdatePhysics() and so on
 - autopilot to travel to specific point
 - handling of errors
+- consider vsynch
 m option to turnoff yield
 m multithreading protection (for GlobalURNG)
 
@@ -671,6 +683,7 @@ class UndeterminedRandomGenerator;
 class GlobalURNG;
 class StarComponent;
 class AutopilotInstruction;
+class FTLStripe;
 
 /*
 To receive events like mouse and keyboard input, or GUI events like "the OK
@@ -863,6 +876,7 @@ class SpaceObject {
 			STARGATE,            //s32, 0 - none, 1 - gate, 2 - event horizon
 			ACTIVE,              //bool: 0 - false, 1 - true  (only for stargate)
 			CURRENT_PROCESS,     //s32, see enum ProcessType
+			COLLISIONS_CHECK,    //bool: 0 - false, 1 - true
 
 			INT_PROPERTIES_COUNT,//Only for array allocation
 		};
@@ -1007,6 +1021,7 @@ class GamePhysics {
 		SpaceObject* GetWormholeTo(vector2ds galaxyQuadrant);
 		SpaceObject* GetFirstObject(SpaceObject::IntProperty prop, s32 value);
 		void GetObjectsAtDistance(core::array<SpaceObject*>* list, vector3d location, f64 distance);
+		f64 GetTimeSpeed() {return timeSpeed;}
 
 		//Setters
 		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
@@ -1167,6 +1182,7 @@ class ResourceManager
 		SpaceObject* MakeStargateEH();
 		SpaceObject* MakeShip();
 		SpaceObject* MakeMarker();
+		SpaceObject* MakeGravityWell(f64 radius);//location of star/planet in HyperSpace
 		SpaceObject* MakeProjectile();
 		SpaceObject* LoadNodesForShip(SpaceObject* ship);
 		void AddMarker(SpaceObject* toObject, u32 type);
@@ -1197,10 +1213,11 @@ class ResourceManager
 class GameView
 {
 public:
-	virtual void Init() {};
-	virtual void Activate() {};
-	virtual void Update(f64 frameDeltaTime) {};
-	virtual void Close() {};
+	virtual void Init() {}; //called once, after construction
+	virtual void Prepare() {};//called for recreating objects
+	virtual void Activate() {};//called just before switching
+	virtual void Update(f64 frameDeltaTime) {}; //update on frame
+	virtual void Close() {}; //called once for destruction
 
 	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
 	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
@@ -1228,7 +1245,7 @@ public:
 	RealSpaceView();
 
 	void Init();
-	void ReInit();
+	void Prepare();
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
@@ -1282,6 +1299,7 @@ class MapSpaceView : public GameView
 {
 public:
 	void Init();
+	void Prepare();
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
@@ -1315,15 +1333,18 @@ class FTLView : public GameView
 {
 public:
 	void Init();
+	void Prepare();
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
 
 private:
+	f64 angle;//fly angle
 	PlayerShip* playerShip;
 	SceneNode* playerShipNode;
 	scene::ICameraSceneNode* camera;
 	gui::IGUIStaticText* simpleTextToDisplay;
+	core::array<FTLStripe*> stripes;//for GFX only
 };
 
 //QuasiSpaceView - to render fly in QuasiSpace of PlusMinus
@@ -1331,10 +1352,12 @@ class QuasiSpaceView : public GameView
 {
 public:
 	void Init();
+	void Prepare();
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
-	
+
+
 private:
 	PlayerShip* playerShip;
 	SceneNode* playerShipNode;
@@ -1346,9 +1369,12 @@ class HyperSpaceView : public GameView
 {
 public:
 	void Init();
+	void Prepare();
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
+
+	void AddStar(GalaxyStarSystem* starSystem);
 
 	f64 GetCameraDistance() {return cameraDistance;}
 	f64 cameraDistanceDegree;
@@ -1410,6 +1436,7 @@ public:
 	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);//Get star system in quadrant
 	GalaxyStarSystem* GetNearStarSystem(vector2d coordinates);//Get nearest star system by exact coordinates
 	void AddNearStarSystems(MapSpaceView* mapView);//Add markers of near star system to MapView
+	void AddHyperSpaceObjects(HyperSpaceView* hyperView);//Add markers of near star system to HyperSpaceView
 	u32 CheckStarPresence(vector2ds coordinates);//Check only presence of star in quadrant
 	u32 CheckStargatePresence(vector2ds coordinates, bool checkStar);//Check presence of stargate in system
 	u32 IsInGrid(vector2ds coordinates);//Check coordinates for being inside 131072x131072 grid
@@ -1669,6 +1696,17 @@ public:
 	SpaceObject* object;
 	SpaceObject* paramObject;
 	text_string textInfo;
+};
+
+//FTL graphical stripe
+class FTLStripe
+{
+public:
+	f64 angle;
+	f64 speed;
+	f64 acceleration;
+	f64 width;
+	SceneNode* node;
 };
 
 //#########################################################################
@@ -3603,6 +3641,9 @@ void GamePhysics::CheckCollisions(SpaceObject* object)
 		return;
 	for (i=0;i<listObjects.size();i++)
 	{
+		if (listObjects[i]->GetIntProperty(SpaceObject::COLLISIONS_CHECK)==0)
+			continue;
+
 		if (listObjects[i]==object)
 			continue;//Skip same object
 
@@ -3996,6 +4037,7 @@ SpaceObject* ResourceManager::MakeStar(f64 radius, s32 polygons)
 	newStar->SetNode(sceneNode);
 	//newStar->SetMotionType(SpaceObject::MOTION_NONE);
 	newStar->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NONE);
+	newStar->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 	newStar->SetFloatProperty(SpaceObject::GRAVITY_MIN_RADIUS,radius);
 	newStar->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);
 	//planetOne->SetOrbitalParams(0,200,300,0);
@@ -4080,6 +4122,7 @@ SpaceObject* ResourceManager::MakePlanet(f64 radius, s32 polygons)
 		//node2->setMaterialFlag(video::EMF_NORMALIZE_NORMALS,true);
 	}
 	newPlanet->SetNode(sceneNode);
+	newPlanet->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 	newPlanet->SetFloatProperty(SpaceObject::GRAVITY_MIN_RADIUS,radius);
 	newPlanet->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);
 	//planetOne->SetMotionType(SpaceObject::MOTION_NONE);
@@ -4097,6 +4140,7 @@ SpaceObject* ResourceManager::MakeBarycenter()
 {
 	SpaceObject* barycenter = new SpaceObject();//delete is in GamePhysics::ClearObjects
 	barycenter->SetNode(0);
+	barycenter->SetIntProperty(SpaceObject::COLLISIONS_CHECK,0);
 	
 	physics->AddObject(barycenter);
 
@@ -4113,6 +4157,7 @@ SpaceObject* ResourceManager::MakeWormhole()
 	sceneNode->setScale(vector3df(0.1429f));
 	newWormhole->SetNode(sceneNode);
 
+	newWormhole->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 	newWormhole->SetFloatProperty(SpaceObject::MASS,0);
 	newWormhole->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0.1);//Distance to check passing thru circle
 	newWormhole->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
@@ -4140,6 +4185,7 @@ SpaceObject* ResourceManager::MakeStargate()
 	sceneNode->setScale(vector3df(50.0f));
 	newStargate->SetNode(sceneNode);
 
+	newStargate->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 	newStargate->SetFloatProperty(SpaceObject::MASS,0);
 	newStargate->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,50.0*0.7);
 	newStargate->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
@@ -4221,11 +4267,36 @@ SpaceObject* ResourceManager::MakeMarker()
 
 	newMarker->SetNode(0);
 	newMarker->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,0);
+	newMarker->SetIntProperty(SpaceObject::COLLISIONS_CHECK,0);
 
 	physics->AddObject(newMarker);
 	AddMarker(newMarker,0);
 
 	return newMarker;
+}
+
+SpaceObject* ResourceManager::MakeGravityWell(f64 radius)
+{
+	SpaceObject* newWell = new SpaceObject();//delete is in GamePhysics::ClearObjects
+	SceneNode * sceneNode;
+
+	sceneNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+	if (sceneNode)
+	{
+		sceneNode->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+		sceneNode->setMaterialFlag(video::EMF_LIGHTING, false);
+		sceneNode->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/star3.bmp"));
+		sceneNode->setScale(vector3df((f32)(radius*2.0)));
+	}
+	newWell->SetNode(sceneNode);
+
+	newWell->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);
+	newWell->SetIntProperty(SpaceObject::COLLISIONS_CHECK,0);
+
+	physics->AddObject(newWell);
+	AddMarker(newWell,0);
+
+	return newWell;
 }
 
 SpaceObject* ResourceManager::MakeProjectile()
@@ -4246,6 +4317,7 @@ SpaceObject* ResourceManager::MakeProjectile()
 	newProjectile->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NAVIGATION);
 	newProjectile->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 	newProjectile->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,1);
+	newProjectile->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 
 	physics->AddObject(newProjectile);
 	AddMarker(newProjectile,0);
@@ -4269,6 +4341,7 @@ SpaceObject* ResourceManager::MakeShip()
 	SpaceObject* ship = new SpaceObject();//delete is in GamePhysics::ClearObjects
 	//ship->SetMotionType(SpaceObject::MOTION_NAVIGATION);
 	ship->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NAVIGATION);
+	ship->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 
 	//ship->SetGravity(false,true);
 	ship->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
@@ -4512,11 +4585,11 @@ void RealSpaceView::Init()
 	// This is the movemen speed in units per second.
 	//MOVEMENT_SPEED = 5.0;
 
-	ReInit();
+	Prepare();
 
 }
 
-void RealSpaceView::ReInit()
+void RealSpaceView::Prepare()
 {
 	resourceManager->SetSceneManager(sceneManager);
 	sceneManager->clear();
@@ -5298,6 +5371,10 @@ void MapSpaceView::Init()
 	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 255, 0));
 }
 
+void MapSpaceView::Prepare()
+{
+}
+
 void MapSpaceView::Activate()
 {
 
@@ -5782,13 +5859,43 @@ void FTLView::Init()
 		L"Diagnostic very-very-very-very-very-very-very-very-long 3\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
 	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 0, 0));
 
+	for (u32 i = 0;i<60;i++)
+	{
+		FTLStripe* stripe1 = new FTLStripe();
+		stripe1->node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+		if (stripe1->node)
+		{
+			stripe1->node->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+			stripe1->node->setMaterialFlag(video::EMF_LIGHTING, false);
+			stripe1->node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/stripe1.bmp"));
+			stripe1->node->setScale(vector3df(3.f,100.0f,1.0f));
+		}
+		stripes.push_back(stripe1);
+	}
+}
+
+void FTLView::Prepare()
+{
 }
 
 void FTLView::Activate()
 {
 	playerShip = gameRoot->GetPlayerShip();
 
-	playerShipNode->setRotation(vector3df(0,0,(f32)(playerShip->GetFloatProperty(SpaceObject::ROTATION_ANGLE)*RADTODEG64)));
+	angle = playerShip->GetFloatProperty(SpaceObject::ROTATION_ANGLE);
+
+	playerShipNode->setRotation(vector3df(0,0,(f32)(angle*RADTODEG64)));
+
+	for (u32 i=0;i<stripes.size();i++)
+	{
+		stripes[i]->angle = (GlobalURNG::Instance().GenerateByte()-127)*0.5*TWO_PI/255;//-pi/2 .. +pi/2
+		stripes[i]->speed = (GlobalURNG::Instance().GenerateByte()-127)*0.001;//-0.127 .. +0.128
+		stripes[i]->acceleration = (GlobalURNG::Instance().GenerateByte()-127)*0.002;//-0.254 .. +0.256
+		stripes[i]->width = 0.5+GlobalURNG::Instance().GenerateByte()/255.0;
+		stripes[i]->node->setScale(vector3df((f32)(3.0*stripes[i]->width),100.0f,1.0f));
+		stripes[i]->node->setRotation(vector3df(0,0,(f32)((angle+TWO_PI*0.25)*RADTODEG64)));
+	}
+
 	//sceneManager->addSceneNode(
 }
 
@@ -5847,12 +5954,52 @@ void FTLView::Update(f64 frameDeltaTime)
 		}
 		debug_text += playerShip->GetAutopilotInfo();
 		simpleTextToDisplay->setText(debug_text.c_str());
-
 	}
 
+	{
+		f64 timeAdd = frameDeltaTime*gamePhysics->GetTimeSpeed();
+		f64 kx = cos(angle+TWO_PI*0.25);
+		f64 ky = sin(angle+TWO_PI*0.25);
+		for (u32 i=0;i<stripes.size();i++)
+		{
+			bool cycled=false;
+			f64 x = 20.0*sin(stripes[i]->angle);
+			f64 y = 20.0*cos(stripes[i]->angle);
+			stripes[i]->angle+=timeAdd*(stripes[i]->speed+0.5*timeAdd*stripes[i]->acceleration);
+			stripes[i]->speed+=timeAdd*stripes[i]->acceleration;
+			if (stripes[i]->speed>0.3)
+				stripes[i]->speed=0.3;
+			if (stripes[i]->speed<-0.3)
+				stripes[i]->speed=-0.3;
+			if (stripes[i]->angle>TWO_PI*0.25)
+			{
+				stripes[i]->angle=-TWO_PI*0.25;
+				cycled=true;
+			}
+			if (stripes[i]->angle<-0.25*TWO_PI)
+			{
+				stripes[i]->angle=TWO_PI*0.25;
+				cycled=true;
+			}
+			if (cycled)
+			{
+				stripes[i]->width = 0.5+GlobalURNG::Instance().GenerateByte()/255.0;
+				stripes[i]->node->setScale(vector3df((f32)(3.0*stripes[i]->width),100.0f,1.0f));
+				stripes[i]->speed = (GlobalURNG::Instance().GenerateByte()-127)*0.001;//-0.127 .. +0.128
+			}
+			stripes[i]->node->setPosition(vector3df((f32)(x*kx),(f32)(x*ky),(f32)y));
+
+			if (GlobalURNG::Instance().GenerateByte()==0)
+			{
+				stripes[i]->acceleration = (GlobalURNG::Instance().GenerateByte()-127)*0.002;
+			}
+
+		}
+	}
 
 	//TODO: use resourceManager to render?
-	videoDriver->beginScene(true, true, video::SColor(255,20,200,20));
+	//videoDriver->beginScene(true, true, video::SColor(255,20,200,20));
+	videoDriver->beginScene(true, true, video::SColor(255,10,100,10));
 	sceneManager->drawAll();
 	device->getGUIEnvironment()->drawAll();
 	videoDriver->endScene();
@@ -5860,6 +6007,12 @@ void FTLView::Update(f64 frameDeltaTime)
 
 void FTLView::Close()
 {
+	for (u32 i = 0;i<stripes.size();i++)
+	{
+		delete stripes[i];
+	}
+	stripes.clear();
+
 	sceneManager->drop();
 }
 
@@ -5910,6 +6063,11 @@ void QuasiSpaceView::Init()
 	}
 
 }
+
+void QuasiSpaceView::Prepare()
+{
+}
+
 
 void QuasiSpaceView::Activate()
 {
@@ -5980,7 +6138,7 @@ void HyperSpaceView::Init()
 
 }
 
-void HyperSpaceView::Activate()
+void HyperSpaceView::Prepare()
 {
 	playerShip = gameRoot->GetPlayerShip();
 
@@ -5995,6 +6153,28 @@ void HyperSpaceView::Activate()
 		camera->setTarget(vector3df(0));
 		camera->setFOV(0.7f);
 	}
+}
+
+void HyperSpaceView::Activate()
+{
+}
+
+void HyperSpaceView::AddStar(GalaxyStarSystem* starSystem)
+{
+	vector3d starHyperPos;
+	vector2d starGalaxyPos;
+	SpaceObject* starMarker = resourceManager->MakeGravityWell(0.01*LIGHTYEAR/HYPERSPACE_SCALE);
+
+	starGalaxyPos = starSystem->GetGalaxyCoordinates();
+	starHyperPos.X = starGalaxyPos.X*LIGHTYEAR/HYPERSPACE_SCALE;
+	starHyperPos.Y = starGalaxyPos.Y*LIGHTYEAR/HYPERSPACE_SCALE;
+	starHyperPos.Z = 0;
+
+	starMarker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+	starMarker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+	starMarker->SetPosition(starHyperPos);
+	starMarker->SetName(starSystem->GetName());
+
 }
 
 void HyperSpaceView::Update(f64 frameDeltaTime)
@@ -6507,7 +6687,7 @@ void DG_Game::GoInterstellar()
 	}
 
 	RealSpace->Clean();
-	RealSpace->ReInit();
+	RealSpace->Prepare();
 
 	RealSpace->cameraDistanceDegree = cameraDistance;
 	RealSpace->UpdateCameraDistance();
@@ -6547,7 +6727,7 @@ void DG_Game::GoStarSystem(GalaxyStarSystem* toStarSystem)
 	gamePhysics->GoStarSystem();
 
 	RealSpace->Clean();
-	RealSpace->ReInit();
+	RealSpace->Prepare();
 
 	resourceManager->SetSceneManager(smgr);
 	resourceManager->MakeBackground();
@@ -6596,6 +6776,11 @@ void DG_Game::GoHyperSpace()
 
 	playerShip->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_HYPER);
 	gamePhysics->GoHyperSpace();
+
+	HyperSpace->Prepare();
+
+	UseSceneManager(VIEW_HYPERSPACE);
+	wholeGalaxy->AddHyperSpaceObjects(HyperSpace);
 
 	playerShip->SetPosition(playerHyperSpacePos);
 	playerShip->SetSpeed(vector3d(0));
@@ -7578,6 +7763,20 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 	return;
 
 }
+
+void Galaxy::AddHyperSpaceObjects(HyperSpaceView* hyperView)
+{
+	u32 i;
+	vector2d coordinates1,coordinates2;
+
+	for (i=0;i<knownStars.size();i++)
+	{
+		hyperView->AddStar(knownStars[i]);
+	}
+	return;
+
+}
+
 
 u32 Galaxy::IsInGrid(vector2ds coordinates)
 {
