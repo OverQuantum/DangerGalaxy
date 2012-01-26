@@ -261,6 +261,12 @@ coding demo1:
 120122: ADD: HyperSpace (works, but completely empty)
 120123: ADD: stars grav-wells in HyperSpace
 120123: ADD: GFX in FTL (not very nice at high timespeed)
+120124: CHG: better GFX in FTL
+120125: ADD: scaner in HyperSpace
+120125: ADD: twirl of speed in HyperSpace, with high relativistic effec
+120125: CHG: recalc star on moving in HyperSpace, zoom limited
+120125: CHG: conversion pixel->physics coordinates is subroutined
+120125: ADD: autopilot in HyperSpace (timer-ed)
 
 
 
@@ -321,6 +327,13 @@ DONE:
 + stargate system : "killing" non-player objects
 + wormhole network : "killing" non-player objects
 + wormhole network : opening on approaching mass and closing - by process
++ FTL nice graphic (flow algorithm)
++ HyperSpace : location of stars
++ HyperSpace : scaner to recognize stars
++ HyperSpace : limit zoom
++ HyperSpace : twirl - drift of speed angle (+increase of drift on near-lightspeed)
++ HyperSpace : recalc stars on moving thru Galaxy
++ HyperSpace : timer-autopilot
 
 
 TODO:
@@ -328,20 +341,17 @@ TODO:
 * MAIN PLAN
 - BUG: something wrong on Linux with angle on autopilot stop and orbiting ( .normalize() ??)
 - HyperSpace
-  + location of stars
-  - scaner to recognize stars
-  - limit zoom
-  - recalc stars on moving thru Galaxy
-  - drift of speed angle (+increase of drift on near-lightspeed)
-  - timer-autopilot (without markers)
   ? location of planets (just location "gravity well" or so) (need remade of starsystemgenerator)
   ? mass-depends gravity wells of stars
+  - "fog" (to limit visible stars not by rectangle screen)
   - approx map(?)
   - entering and exiting by hypergate/jumpsphere/etc
   - distorted relation to RealSpace (? how distorted?)
+  - twirl depends on coordinates only (combined with distorted relation)
+  - nice graphic for background (2D flow algorithm ?)
+  - in-HyperSpace quick-living objects (slowdown or speedup player; pull/push by gravity-like force e.t.c.)
 - FTL
-  . nice graphic
-  - "waterdrop"-shape shield around ship
+  - "aerodynamic"-shape forcefield around ship
 - BUG: projectiles left in interstellar space are flying strange
 - weapons
   - hit objects
@@ -358,6 +368,7 @@ TODO:
   . rotation, thrust
   . object statuses
 - setup more in meshes, less in code
+- BUG/FEATURE: something wrong with device->yield() - cause 65 fps in case of NOT LAUNCHED R&Q
 
 
 
@@ -874,6 +885,7 @@ class SpaceObject {
 			TRAVEL_TO_X,         //s32, x coordinate of wormhole or stargate travel
 			TRAVEL_TO_Y,         //s32, y coordinate --- !! ----
 			STARGATE,            //s32, 0 - none, 1 - gate, 2 - event horizon
+			GRAVITY_WELL,        //bool, 0 - none, 1 - gravity well (only for hyperspace)
 			ACTIVE,              //bool: 0 - false, 1 - true  (only for stargate)
 			CURRENT_PROCESS,     //s32, see enum ProcessType
 			COLLISIONS_CHECK,    //bool: 0 - false, 1 - true
@@ -961,6 +973,7 @@ class SpaceObject {
 		bool AutopilotFlyTo(AutopilotInstruction* instruction, f64 frameTime);//Simply flying (rotate+accelerate+fly-at-half-lightspeed+breaking)
 		bool AutopilotFTLTo(AutopilotInstruction* instruction, f64 frameTime);//FTL to location
 		bool AutopilotFlyToOrbit(AutopilotInstruction* instruction, f64 frameTime);//Flying to orbit
+		bool AutopilotHyperFlyTo(AutopilotInstruction* instruction, f64 frameTime);//Flying in HyperSpace to location
 
 		void AddAutopilot(AutopilotInstruction* instruction);
 		void BreakAutopilot();
@@ -1064,6 +1077,8 @@ class GamePhysics {
 
 		void Activate();
 
+		f64 GetHyperSpaceTwirl();
+
 		void DebugJumpToWormhole(u32 param);
 
 		void MakeMap(MapSpaceView* mapView);//Provide MapSpaceView with info about all objects
@@ -1073,6 +1088,8 @@ class GamePhysics {
 		bool isInterstellar;
 		f64 maxGravityCheckRadiusSQ; //if object is farther from this radius, then we could skip checking of gravity for FTL, radius squared as it is much easier to check this way
 		f64 timeSpeed;//speed of time going, 1.0 for normal, 100 for faster
+		f64 hyperSpaceTwirl;
+		f64 hyperSpaceTwirlChangeTime;
 
 		DG_Game* gameRoot;
 		PlayerShip* playerShip;
@@ -1218,6 +1235,7 @@ public:
 	virtual void Activate() {};//called just before switching
 	virtual void Update(f64 frameDeltaTime) {}; //update on frame
 	virtual void Close() {}; //called once for destruction
+	virtual vector2d GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags) {return vector2d(0);} //for convert mouse clicks into physics/galaxy and so on coordinates, flags: 1 - return galaxy coordinates (default: physics)
 
 	void SetRoot(DG_Game* newRoot) {gameRoot = newRoot;}
 	void SetSceneManager(scene::ISceneManager* newSceneManager) {sceneManager = newSceneManager;}
@@ -1249,6 +1267,7 @@ public:
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
+	vector2d GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags);
 
 	f64 GetCameraDistance() {return cameraDistance;}
 	f64 cameraDistanceDegree;
@@ -1303,6 +1322,8 @@ public:
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
+	vector2d GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags);
+
 	void AddObject(SpaceObject* spaceObject);
 	void AddStarMarker(GalaxyStarSystem* starSystem);
 	void AddWormholeLink(vector2d coordinates1, vector2d coordinates2);
@@ -1339,7 +1360,9 @@ public:
 	void Close();
 
 private:
+	static const u32 flowSectorCount = 32;
 	f64 angle;//fly angle
+	s32 flowSectors[flowSectorCount];
 	PlayerShip* playerShip;
 	SceneNode* playerShipNode;
 	scene::ICameraSceneNode* camera;
@@ -1373,8 +1396,10 @@ public:
 	void Activate();
 	void Update(f64 frameDeltaTime);
 	void Close();
+	vector2d GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags);
 
 	void AddStar(GalaxyStarSystem* starSystem);
+	void RemoveAllStars();
 
 	f64 GetCameraDistance() {return cameraDistance;}
 	f64 cameraDistanceDegree;
@@ -1401,7 +1426,7 @@ public:
 
 	void SetGalaxyCoordinates(vector2d newCoords) {galaxyCoordinates=newCoords;}
 
-	void UpdateGalaxyCoordinates();
+	void UpdateGalaxyCoordinates(u32 type);
 
 	void JumpToQuasiSpace(s32 direction);//+1 for Plus, -1 for Minus, 0 for random (+2/-2)
 	void BreakQuasiSpace();
@@ -1410,7 +1435,7 @@ public:
 	void SetControlThrust(f64 newThrust);
 
 	void FallIntoStargate(SpaceObject* wormhole);
-	void ScanSpace();
+	void ScanSpace(f64 radius);
 
 	void DebugPrint_QuasiSpace();
 
@@ -1436,7 +1461,7 @@ public:
 	GalaxyStarSystem* GetStarSystem(vector2ds coordinates);//Get star system in quadrant
 	GalaxyStarSystem* GetNearStarSystem(vector2d coordinates);//Get nearest star system by exact coordinates
 	void AddNearStarSystems(MapSpaceView* mapView);//Add markers of near star system to MapView
-	void AddHyperSpaceObjects(HyperSpaceView* hyperView);//Add markers of near star system to HyperSpaceView
+	void AddHyperSpaceObjects(HyperSpaceView* hyperView, u32 flags);//Add markers of near star system to HyperSpaceView
 	u32 CheckStarPresence(vector2ds coordinates);//Check only presence of star in quadrant
 	u32 CheckStargatePresence(vector2ds coordinates, bool checkStar);//Check presence of stargate in system
 	u32 IsInGrid(vector2ds coordinates);//Check coordinates for being inside 131072x131072 grid
@@ -1485,6 +1510,7 @@ private:
 	core::array<GalaxyStarSystem*> knownStars;//cache for near stars
 	core::array<WormholeInfo*> knownWormholes;//cache for wormholes
 	vector2ds knownStarsAnchor;//"center" of cache
+	vector2ds hyperSpaceStarsAnchor;//last updated "center" of cache
 
 	GalaxyStarSystem* SeedStar(vector2ds coordinates);//seed star system from galaxy seed. Prereq: galaxyRNG must be seeded with coordinates in CheckStarPresence() or so
 	void UpdateKnownStars(s32 param = 0);//Updates caches (ex. in case of player moves to quadrant other than center of cache)
@@ -1674,6 +1700,7 @@ public:
 		//AP_FTL_TIMER,       //FTL jump for specific time, params: value1 is time 
 		AP_FTL_TO,          //FTL fly to specific location, params: vector1 is required location (galaxy coordinates)
 		AP_FLY_TO_ORBIT,    //Fly to orbit of object near specific location, params: paramObject is object to orbit, value1 is orbit height
+		AP_HYPERSPACE_FLY_TO, //Fly to in HyperSpace, params: vector1 is required location
 	};
 
 	AutopilotInstruction() {prepareText = false; object = 0; paramObject = 0;}
@@ -1693,7 +1720,7 @@ public:
 	f64 value3;
 	f64 value4;
 	f64 value5;
-	SpaceObject* object;
+	SpaceObject* object;//for autopilot marker
 	SpaceObject* paramObject;
 	text_string textInfo;
 };
@@ -1704,8 +1731,9 @@ class FTLStripe
 public:
 	f64 angle;
 	f64 speed;
-	f64 acceleration;
+	//f64 acceleration;
 	f64 width;
+	//u32 red, green, blue;
 	SceneNode* node;
 };
 
@@ -2501,6 +2529,142 @@ bool SpaceObject::AutopilotFlyToOrbit(AutopilotInstruction* instruction, f64 fra
 	return false;
 }
 
+bool SpaceObject::AutopilotHyperFlyTo(AutopilotInstruction* instruction, f64 frameTime)
+{
+	vector3d requiredLocation = vector3d(instruction->vector1.X,instruction->vector1.Y,0);
+
+	f64 speedInDirection;
+	f64 maxThrust;
+	f64 distanceSQ;
+	f64 timeRotate = 2.0;
+	f64 maxSpeed;
+
+	//TODO: optimize initial calcs
+	vector3d flyVector = requiredLocation-position;
+	vector3d flyDirection = flyVector;
+	distanceSQ = flyVector.getLengthSQ();
+	
+	flyDirection.normalize();
+	speedInDirection = flyDirection.dotProduct(speed);
+	maxThrust = GetFloatProperty(MAX_THRUST);
+
+	switch(instruction->phase)
+	{
+	case 0:
+	case 1:
+		//Accelerate into direction of target
+
+		f64 D1;
+
+		D1 = 0.25*timeRotate*timeRotate + 0.5*(speedInDirection*speedInDirection)/(maxThrust*maxThrust) + sqrt(distanceSQ)/maxThrust;
+		if (D1<0)
+		{
+			//Should not happens ever, as D1 have only positive components
+			wprintf(L" Autopilot fly-to, failed to solve speed equation\r\n");
+			return true;//autopilot failed;
+		}
+		maxSpeed = maxThrust*(sqrt(D1)-0.5*timeRotate);
+		
+		if (maxSpeed>(LIGHTSPEED*.3))
+			maxSpeed=LIGHTSPEED*.3;
+
+		if (instruction->prepareText)
+		{
+			instruction->textInfo = L"Autopilot accelerating... ETA: ";
+			instruction->textInfo += print_f64(sqrt(distanceSQ)/maxSpeed,L"%.03f");
+		}
+
+		instruction->value2 = maxSpeed;//max speed
+		instruction->phase = 2;//course calculated
+		AutopilotSetSpeed(flyDirection*maxSpeed);
+		break;
+	case 2:
+		//Accelerate
+		maxSpeed = instruction->value2;
+		if (abs(speedInDirection-maxSpeed)<maxSpeed*0.001)
+		{
+			f64 time = sqrt(distanceSQ)/maxSpeed + 0.5*maxSpeed/maxThrust;
+			//wprintf(L" Autopilot fly-to, speed reached, flying... ETA %.3f\r\n",time);
+			instruction->value3 = time;
+			instruction->value4 = 0;
+			instruction->phase = 3;
+
+			if (instruction->prepareText)
+			{
+				instruction->textInfo = L"Autopilot fly... ETA: ";
+				instruction->textInfo += print_f64(time,L"%.03f");
+			}
+
+			//remove marker as rest of fly is timer-only
+			instruction->object->Delete();
+			instruction->object=0;
+		}
+		else
+			AutopilotSetSpeed(flyDirection*maxSpeed);
+
+		break;
+	case 3:
+		//Fly on course by timer
+		maxSpeed = instruction->value2;
+		instruction->value3-=frameTime;
+		if (instruction->value3<timeRotate)
+		{
+			//prepare for breaking in advance
+			AutopilotRotate(-flyDirection);
+		}
+		if (instruction->value3<(maxSpeed/maxThrust))
+		{
+			if (instruction->prepareText)
+				instruction->textInfo = L"Autopilot deceleration...";
+			instruction->phase = 4;//deceleration
+		}
+
+		if (instruction->prepareText)
+		{
+			instruction->textInfo = L"Autopilot fly... ETA: ";
+			instruction->textInfo += print_f64(instruction->value3,L"%.01f");
+			
+		}
+		break;
+	case 4:
+		//Decelerate to zero
+		return AutopilotSetSpeed(vector3d(0));
+		break;
+	default:
+		break;
+
+	}
+
+	/*
+
+	if (instruction->value3!=0 && AutopilotRotate(flyDirection))
+	{
+
+	}
+	else
+	{
+	}*/
+	return false;
+
+	/*
+	timeDeceleration = speedInDirection/maxThrust + 2.0;//2 is time of rotate to backward
+	distanceForDeceleration = 0.5*maxThrust*timeDeceleration*timeDeceleration;
+	if (distanceSQ>(distanceForDeceleration*distanceForDeceleration))
+	{
+		maxSpeed = 0.8*sqrt(2.0*sqrt(distanceSQ)*maxThrust);//-maxThrust*2.0;
+		if (maxSpeed>(LIGHTSPEED*.5))
+			maxSpeed=LIGHTSPEED*.5;
+		flyDirection*=maxSpeed;
+		AutopilotSetSpeed(flyDirection);
+		return false;
+	}
+	else
+	{
+		flyDirection*=0.8*sqrt(2.0*sqrt(distanceSQ)*maxThrust);
+		return AutopilotSetSpeed(flyDirection);
+	}*/
+}
+
 
 void SpaceObject::UpdateMarkerNode(f64 cameraDistance)
 {
@@ -2597,6 +2761,13 @@ void SpaceObject::UpdatePhysics(f64 time)
 				autopilotQueue.erase(0);
 			}
 			break;
+		case AutopilotInstruction::AP_HYPERSPACE_FLY_TO:
+			if (AutopilotHyperFlyTo(ins,time))
+			{
+				delete ins;
+				autopilotQueue.erase(0);
+			}
+			break;
 		default:
 			{
 				//Delete unknown objectives
@@ -2614,6 +2785,24 @@ void SpaceObject::UpdatePhysics(f64 time)
 		//do nothing;
 		break;
 	case MOTION_HYPER:
+		{
+			f64 speedLen = speed.getLength();
+			f64 twirl = physics->GetHyperSpaceTwirl()*time*0.00000002*speedLen;//about 500 ly raduius of minimum curvature if v<<c
+
+			//f64 pseudoRelativisticKoeff=1.0 - speed.getLengthSQ()/(LIGHTSPEED*LIGHTSPEED);
+			f64 pseudoRelativisticKoeff=1.0 - speedLen/LIGHTSPEED;
+			f64 x=speed.X,y=speed.Y;
+			if (pseudoRelativisticKoeff<1e-10) 
+				pseudoRelativisticKoeff = 1e-10;
+			twirl/=pseudoRelativisticKoeff*pseudoRelativisticKoeff*pseudoRelativisticKoeff; //max = 1e10
+			//twirl speed ~3x at 0.3c, 8x at 0.5c, 125x at 0.8c, 1000x at 0.9c, 8000x at 0.95c, 1e6x at 0.99c
+			
+			f64 kx = cos(twirl),ky = sin(twirl);
+			speed.X = kx*x-ky*y;
+			speed.Y = kx*y+ky*x;
+			//speed.rotateXYBy
+		}
+		//fall into navigation
 	case MOTION_NAVIGATION:
 		{
 			//vector3d prevPosition;
@@ -3148,6 +3337,9 @@ void SpaceObject::Delete()
 GamePhysics::GamePhysics()
 {
 	calcCollisions = false;
+	hyperSpaceTwirlChangeTime=0;
+	hyperSpaceTwirl=0;
+
 }
 
 void GamePhysics::SetTimeSpeed(f64 newSpeed)
@@ -3916,6 +4108,18 @@ void GamePhysics::GetObjectsAtDistance(core::array<SpaceObject*>* list, vector3d
 	}
 }
 
+f64 GamePhysics::GetHyperSpaceTwirl()
+{
+	//TODO: twirl should depends on galaxy coords, not be timer-random
+
+	if (globalTime>hyperSpaceTwirlChangeTime)
+	{
+		hyperSpaceTwirl = 2.0*GlobalURNG::Instance().GenerateByte()/255.0-1.0;
+		hyperSpaceTwirlChangeTime = globalTime+5;
+	}
+	return hyperSpaceTwirl;
+	//return 1.0;//DEBUG
+}
 
 //#########################################################################
 //ResourceManager
@@ -4292,6 +4496,7 @@ SpaceObject* ResourceManager::MakeGravityWell(f64 radius)
 
 	newWell->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,radius);
 	newWell->SetIntProperty(SpaceObject::COLLISIONS_CHECK,0);
+	newWell->SetIntProperty(SpaceObject::GRAVITY_WELL,1);
 
 	physics->AddObject(newWell);
 	AddMarker(newWell,0);
@@ -4624,6 +4829,27 @@ void RealSpaceView::Activate()
 {
 }
 
+//flags: 1 - return galaxy coordinates (default: physics)
+vector2d RealSpaceView::GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags)
+{
+	core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
+	f64 kfov = 2*tan(camera->getFOV()*0.5)*cameraDistance;
+	vector2d gameCoordinates;
+	gameCoordinates.X = pixelCoords.X;
+	gameCoordinates.Y = pixelCoords.Y;
+	gameCoordinates.X=playerShip->GetPosition().X+kfov*((gameCoordinates.X-screenSize.Width*.5)/screenSize.Height);
+	gameCoordinates.Y=playerShip->GetPosition().Y-kfov*(gameCoordinates.Y/screenSize.Height-0.5);
+
+	if ((flags&1)!=0)
+	{
+		//galaxy coordinates needed
+		gameCoordinates/=LIGHTYEAR;
+		gameCoordinates+=gamePhysics->GetGalaxyCoordinatesOfCenter();
+	}
+
+	return gameCoordinates;
+}
+
 void RealSpaceView::Update(f64 frameDeltaTime)
 {
 	vector3d playerPosition;// = node->getPosition();
@@ -4818,6 +5044,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		*/
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_H))
 		{
+			DisplayMessage(L"Jump to HyperSpace");
 			gameRoot->GoHyperSpace();
 			return;
 		}
@@ -4849,7 +5076,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_T))
 		{
-			playerShip->ScanSpace();
+			playerShip->ScanSpace(1e4);
 		}
 
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_Y))
@@ -4917,7 +5144,9 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 	vector2ds lastClick = eventReceiver->GetLastMouseClick();
 	if (lastClick.X>-1)
 	{
+		vector2d clickPos = GetCoordinatesOnScreen(lastClick,0);
 		eventReceiver->RemoveLastMouseClick();
+		/*
 		core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
 		f64 kfov = 2*tan(camera->getFOV()*0.5)*cameraDistance;
 		f64 x,y;
@@ -4927,12 +5156,13 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		//y /=screenSize.Height;
 		x=kfov*((x-screenSize.Width*.5)/screenSize.Height)+playerShip->GetPosition().X;//-0.5 .. +0.5
 		y=playerShip->GetPosition().Y-kfov*(y/screenSize.Height-0.5);
+		*/
 
 		u32 buttons = eventReceiver->GetLastMouseClickButtons();
 
 		if (buttons&1)
 		{
-			wprintf(L" Autopilot fly to: %f,%f\r\n",x,y);
+			wprintf(L" Autopilot fly to: %f,%f\r\n",clickPos.X,clickPos.Y);
 
 			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
 
@@ -4940,7 +5170,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			ins->instruction = AutopilotInstruction::AP_FLY_TO;
 			ins->prepareText = true;
 			ins->textInfo = L"";
-			ins->vector1 = vector2d(x,y);
+			ins->vector1 = clickPos;
 			//ins->value1 = 0;//speed, 0 is temprorary
 			ins->value1 = playerShip->GetSpeed().getLength();
 			if (ins->value1>LIGHTSPEED*0.5)
@@ -4953,7 +5183,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			SpaceObject* marker = resourceManager->MakeMarker();
 			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
-			marker->SetPosition(vector3d(x,y,0));
+			marker->SetPosition(vector3d(clickPos.X,clickPos.Y,0));
 			marker->SetName(L"autopilot marker");
 			UpdateCameraDistance();//to show marker
 
@@ -4962,15 +5192,16 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 		else if (buttons&2)
 		{
-			vector2d destination = vector2d(x,y);
-			destination /=LIGHTYEAR;
-			destination += gamePhysics->GetGalaxyCoordinatesOfCenter();
+			//vector2d destination = vector2d(x,y);
+			//destination /=LIGHTYEAR;
+			//destination += gamePhysics->GetGalaxyCoordinatesOfCenter();
+			clickPos = GetCoordinatesOnScreen(lastClick,1);
 			//x+=phy
-			wprintf(L" Autopilot FTL to: %f,%f\r\n",destination.X,destination.Y);
+			wprintf(L" Autopilot FTL to: %f,%f\r\n",clickPos.X,clickPos.Y);
 
 			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
 			ins->instruction = AutopilotInstruction::AP_FTL_TO;
-			ins->vector1 = destination;//vector2d(x,y);
+			ins->vector1 = clickPos;//vector2d(x,y);
 			ins->phase = 0;
 			playerShip->AddAutopilot(ins);
 
@@ -4978,7 +5209,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			SpaceObject* marker = resourceManager->MakeMarker();
 			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
 			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
-			marker->SetPosition(vector3d(x,y,0));
+			marker->SetPosition(vector3d(clickPos.X,clickPos.Y,0));
 			marker->SetName(L"autopilot FTL marker");
 			UpdateCameraDistance();//to show marker
 
@@ -4989,7 +5220,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		{
 
 			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
-			vector3d clickedPosition=vector3d(x,y,0);
+			vector3d clickedPosition=vector3d(clickPos.X,clickPos.Y,0);
 
 			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
 
@@ -5005,10 +5236,10 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 			}
 			else
 			{
-				wprintf(L" Autopilot orbiting to: %f,%f\r\n",x,y);
+				wprintf(L" Autopilot orbiting to: %f,%f\r\n",clickPos.X,clickPos.Y);
 
 				ins->instruction = AutopilotInstruction::AP_FLY_TO;
-				ins->vector1 = vector2d(x,y);
+				ins->vector1 = clickPos;//vector2d(x,y);
 				ins->value1 = playerShip->GetSpeed().getLength();
 				if (ins->value1>LIGHTSPEED*0.5)
 					ins->value1 = LIGHTSPEED*0.5;
@@ -5033,7 +5264,7 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 		}
 		else
 		{
-			wprintf(L" Mouse click on: %f,%f\r\n",x,y);
+			wprintf(L" Mouse click on: %f,%f\r\n",clickPos.X,clickPos.Y);
 		}
 	
 	}
@@ -5432,6 +5663,26 @@ void MapSpaceView::Activate()
 	UpdateCameraDistance(0);
 }
 
+//flags: 1 - return galaxy coordinates (default: physics)
+vector2d MapSpaceView::GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags)
+{
+	core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
+	f64 kfov = tan(camera->getFOV()*0.5)*200/mapScale;//200 = 2 * 100, 100 is cameradistance
+	vector2d gameCoordinates = centerOfMap;
+	gameCoordinates.X+=kfov*((((f64)pixelCoords.X)-screenSize.Width*.5)/screenSize.Height);//-0.5 .. +0.5
+	gameCoordinates.Y-=kfov*(((f64)pixelCoords.Y)/screenSize.Height-0.5);
+
+	if ((flags&1)!=0)
+	{
+		//galaxy coordinates needed
+		gameCoordinates += shiftToGalaxy;
+		gameCoordinates/=LIGHTYEAR;
+	}
+
+	return gameCoordinates;
+
+}
+
 void MapSpaceView::Update(f64 frameDeltaTime)
 {
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
@@ -5554,11 +5805,14 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 	if (lastClick.X>-1)
 	{
 		eventReceiver->RemoveLastMouseClick();
+		vector2d clickPos = GetCoordinatesOnScreen(lastClick,0);
+		/*
 		core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
 		f64 kfov = tan(camera->getFOV()*0.5)*200/mapScale;//200 = 2 * 100, 100 is cameradistance
 		vector2d clickPos = centerOfMap;
 		clickPos.X+=kfov*((((f64)lastClick.X)-screenSize.Width*.5)/screenSize.Height);//-0.5 .. +0.5
 		clickPos.Y-=kfov*(((f64)lastClick.Y)/screenSize.Height-0.5);
+		*/
 
 		u32 buttons = eventReceiver->GetLastMouseClickButtons();
 
@@ -5606,8 +5860,9 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 			AddObject(marker);
 			UpdateCameraDistance(0);//to show marker
 
-			clickPos += shiftToGalaxy;
-			clickPos/=LIGHTYEAR;
+			//clickPos += shiftToGalaxy;
+			//clickPos/=LIGHTYEAR;
+			clickPos = GetCoordinatesOnScreen(lastClick,1);
 			wprintf(L" Autopilot FTL to: %f,%f\r\n",clickPos.X,clickPos.Y);
 
 			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
@@ -5669,8 +5924,7 @@ void MapSpaceView::Update(f64 frameDeltaTime)
 		}
 		else
 		{
-			clickPos += shiftToGalaxy;
-			clickPos/=LIGHTYEAR;
+			clickPos = GetCoordinatesOnScreen(lastClick,1);
 			wprintf(L" Mouse click on map: (%.10f,%.10f)\r\n",clickPos.X,clickPos.Y);
 		}
 	}
@@ -5750,7 +6004,7 @@ void MapSpaceView::UpdateCameraDistance(u32 flags)
 	//convert distance to scale
 	mapScale = 30.0*exp(cameraDistanceDegree*-0.003);
 
-	if (flags&1)
+	if ((flags&1)!=0)
 		return;
 
 	//update scale and position of all objects
@@ -5859,14 +6113,14 @@ void FTLView::Init()
 		L"Diagnostic very-very-very-very-very-very-very-very-long 3\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
 	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 0, 0));
 
-	for (u32 i = 0;i<60;i++)
+	for (u32 i = 0;i<50;i++)
 	{
 		FTLStripe* stripe1 = new FTLStripe();
 		stripe1->node = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
 		if (stripe1->node)
 		{
 			stripe1->node->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
-			stripe1->node->setMaterialFlag(video::EMF_LIGHTING, false);
+			stripe1->node->setMaterialFlag(video::EMF_LIGHTING, true);
 			stripe1->node->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/stripe1.bmp"));
 			stripe1->node->setScale(vector3df(3.f,100.0f,1.0f));
 		}
@@ -5888,13 +6142,27 @@ void FTLView::Activate()
 
 	for (u32 i=0;i<stripes.size();i++)
 	{
-		stripes[i]->angle = (GlobalURNG::Instance().GenerateByte()-127)*0.5*TWO_PI/255;//-pi/2 .. +pi/2
-		stripes[i]->speed = (GlobalURNG::Instance().GenerateByte()-127)*0.001;//-0.127 .. +0.128
-		stripes[i]->acceleration = (GlobalURNG::Instance().GenerateByte()-127)*0.002;//-0.254 .. +0.256
+		f64 brightness;//0 - green, 1 - white
+		//f64 color;//0 - a bit to red, 1 - a bit to blue
+		u32 red, green, blue;
+		//stripes[i]->angle = (GlobalURNG::Instance().GenerateByte()-127)*0.5*TWO_PI/255;//-pi/2 .. +pi/2
+		//stripes[i]->angle = GlobalURNG::Instance().GenerateByte()/255.0;//-pi/2 .. +pi/2
+		stripes[i]->angle = 1.0*i/stripes.size();//uniformly
+		stripes[i]->speed = (GlobalURNG::Instance().GenerateByte()-127)*0.0005;
+		//stripes[i]->acceleration = (GlobalURNG::Instance().GenerateByte()-127)*0.002;//-0.254 .. +0.256
 		stripes[i]->width = 0.5+GlobalURNG::Instance().GenerateByte()/255.0;
 		stripes[i]->node->setScale(vector3df((f32)(3.0*stripes[i]->width),100.0f,1.0f));
 		stripes[i]->node->setRotation(vector3df(0,0,(f32)((angle+TWO_PI*0.25)*RADTODEG64)));
+		brightness = 0.7+0.3*GlobalURNG::Instance().GenerateByte()/255.0;
+		//color = GlobalURNG::Instance().GenerateByte()/255.0;
+		green = (u32)(brightness*255.0);
+		red = (u32)(brightness*255.0);
+		blue = (u32)(brightness*255.0);
+		stripes[i]->node->getMaterial(0).EmissiveColor.set(255,red,green,blue);
 	}
+
+	for (u32 i=0;i<flowSectorCount;i++)
+		flowSectors[i]=0;
 
 	//sceneManager->addSceneNode(
 }
@@ -5957,42 +6225,63 @@ void FTLView::Update(f64 frameDeltaTime)
 	}
 
 	{
-		f64 timeAdd = frameDeltaTime*gamePhysics->GetTimeSpeed();
+		f64 timeAdd = 1.0*frameDeltaTime*gamePhysics->GetTimeSpeed();
+		if (gamePhysics->GetTimeSpeed()>30.0)
+			timeAdd=frameDeltaTime*30.0;
 		f64 kx = cos(angle+TWO_PI*0.25);
 		f64 ky = sin(angle+TWO_PI*0.25);
+		f64 fading = exp(-timeAdd*0.1);
+		f64 acceleration;
+		f64 x,y;
+		f64 angleStripe;
+		s32 sector;
+		for (u32 i=0;i<flowSectorCount;i++)
+		{
+			//if (flowSectors[i]>0)
+				flowSectors[i]=0;
+			if (GlobalURNG::Instance().GenerateByte()<3)
+				flowSectors[i]=2;
+
+		}
 		for (u32 i=0;i<stripes.size();i++)
 		{
 			bool cycled=false;
-			f64 x = 20.0*sin(stripes[i]->angle);
-			f64 y = 20.0*cos(stripes[i]->angle);
-			stripes[i]->angle+=timeAdd*(stripes[i]->speed+0.5*timeAdd*stripes[i]->acceleration);
-			stripes[i]->speed+=timeAdd*stripes[i]->acceleration;
-			if (stripes[i]->speed>0.3)
-				stripes[i]->speed=0.3;
-			if (stripes[i]->speed<-0.3)
-				stripes[i]->speed=-0.3;
-			if (stripes[i]->angle>TWO_PI*0.25)
+			//sector = (s32)((0.5+2.0*stripes[i]->angle/TWO_PI)*flowSectorCount);
+
+			if (stripes[i]->angle>=1.0)
 			{
-				stripes[i]->angle=-TWO_PI*0.25;
+				stripes[i]->angle=modf(stripes[i]->angle,&x);
 				cycled=true;
 			}
-			if (stripes[i]->angle<-0.25*TWO_PI)
+			if (stripes[i]->angle<0.0)
 			{
-				stripes[i]->angle=TWO_PI*0.25;
+				stripes[i]->angle=1.0+modf(stripes[i]->angle,&x);
 				cycled=true;
 			}
+			sector = (s32)floor(stripes[i]->angle*flowSectorCount);
 			if (cycled)
 			{
 				stripes[i]->width = 0.5+GlobalURNG::Instance().GenerateByte()/255.0;
 				stripes[i]->node->setScale(vector3df((f32)(3.0*stripes[i]->width),100.0f,1.0f));
-				stripes[i]->speed = (GlobalURNG::Instance().GenerateByte()-127)*0.001;//-0.127 .. +0.128
 			}
-			stripes[i]->node->setPosition(vector3df((f32)(x*kx),(f32)(x*ky),(f32)y));
+			flowSectors[sector]++;
+		}
 
-			if (GlobalURNG::Instance().GenerateByte()==0)
-			{
-				stripes[i]->acceleration = (GlobalURNG::Instance().GenerateByte()-127)*0.002;
-			}
+		for (u32 i=0;i<stripes.size();i++)
+		{
+
+			sector = (s32)floor(stripes[i]->angle*flowSectorCount);
+
+			angleStripe = (stripes[i]->angle-0.5)*TWO_PI*0.5;
+			x = 15.0*sin(angleStripe);
+			y = 15.0*cos(angleStripe);
+
+			acceleration = (flowSectors[(sector+flowSectorCount-1)%flowSectorCount]-flowSectors[(sector+1)%flowSectorCount])*0.03;
+
+			stripes[i]->angle+=timeAdd*(stripes[i]->speed+0.5*timeAdd*acceleration);
+			stripes[i]->speed+=timeAdd*acceleration;
+			stripes[i]->speed*=fading;
+			stripes[i]->node->setPosition(vector3df((f32)(x*kx),(f32)(x*ky),(f32)y));
 
 		}
 	}
@@ -6163,7 +6452,7 @@ void HyperSpaceView::AddStar(GalaxyStarSystem* starSystem)
 {
 	vector3d starHyperPos;
 	vector2d starGalaxyPos;
-	SpaceObject* starMarker = resourceManager->MakeGravityWell(0.01*LIGHTYEAR/HYPERSPACE_SCALE);
+	SpaceObject* starMarker = resourceManager->MakeGravityWell(0.001*LIGHTYEAR/HYPERSPACE_SCALE);
 
 	starGalaxyPos = starSystem->GetGalaxyCoordinates();
 	starHyperPos.X = starGalaxyPos.X*LIGHTYEAR/HYPERSPACE_SCALE;
@@ -6174,7 +6463,42 @@ void HyperSpaceView::AddStar(GalaxyStarSystem* starSystem)
 	starMarker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
 	starMarker->SetPosition(starHyperPos);
 	starMarker->SetName(starSystem->GetName());
+}
 
+void HyperSpaceView::RemoveAllStars()
+{
+	core::array<SpaceObject*> foundObjects;
+	gameRoot->UseSceneManager(DG_Game::VIEW_HYPERSPACE);
+
+	gamePhysics->GetObjectsAtDistance(&foundObjects,vector3d(0,0,0),1e60);//all
+	for (u32 i=0;i<foundObjects.size();i++)
+	{
+		if (foundObjects[i]->GetIntProperty(SpaceObject::GRAVITY_WELL)!=0)
+		{
+			foundObjects[i]->Delete();
+		}
+	}
+}
+
+//flags: 1 - return galaxy coordinates (default: physics)
+vector2d HyperSpaceView::GetCoordinatesOnScreen(vector2ds pixelCoords, u32 flags)
+{
+	core::dimension2d<u32> screenSize = videoDriver->getScreenSize();
+	f64 kfov = 2*tan(camera->getFOV()*0.5)*cameraDistance;
+	vector2d gameCoordinates;
+	gameCoordinates.X = pixelCoords.X;
+	gameCoordinates.Y = pixelCoords.Y;
+	gameCoordinates.X=playerShip->GetPosition().X+kfov*((gameCoordinates.X-screenSize.Width*.5)/screenSize.Height);
+	gameCoordinates.Y=playerShip->GetPosition().Y-kfov*(gameCoordinates.Y/screenSize.Height-0.5);
+
+	if ((flags&1)!=0)
+	{
+		//galaxy coordinates needed
+		gameCoordinates*=HYPERSPACE_SCALE/LIGHTYEAR;
+		
+	}
+
+	return gameCoordinates;
 }
 
 void HyperSpaceView::Update(f64 frameDeltaTime)
@@ -6237,6 +6561,10 @@ void HyperSpaceView::Update(f64 frameDeltaTime)
 		return;
 	}
 
+	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_T))
+	{
+		playerShip->ScanSpace(1e4);
+	}
 
 	if (eventReceiver->IsKeyPressed(irr::KEY_ESCAPE))
 		playerShip->BreakAutopilot();
@@ -6265,6 +6593,119 @@ void HyperSpaceView::Update(f64 frameDeltaTime)
 		cameraDistanceDegree+=200;
 		UpdateCameraDistance();
 	}
+
+
+	vector2ds lastClick = eventReceiver->GetLastMouseClick();
+	if (lastClick.X>-1)
+	{
+		vector2d clickPos = GetCoordinatesOnScreen(lastClick,0);
+		eventReceiver->RemoveLastMouseClick();
+		u32 buttons = eventReceiver->GetLastMouseClickButtons();
+
+		
+		if (buttons&1)
+		{
+			//wprintf(L" Autopilot fly to: %f,%f\r\n",clickPos.X,clickPos.Y);//coords are DEBUG
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_HYPERSPACE_FLY_TO;
+			ins->prepareText = true;
+			ins->textInfo = L"";
+			ins->vector1 = clickPos;
+			ins->phase = 0;
+			playerShip->AddAutopilot(ins);
+
+			resourceManager->SetSceneManager(sceneManager);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(vector3d(clickPos.X,clickPos.Y,0));
+			marker->SetName(L"autopilot marker");
+			UpdateCameraDistance();//to show marker
+
+			ins->object = marker;
+
+		}
+		/*else if (buttons&2)
+		{
+			//vector2d destination = vector2d(x,y);
+			//destination /=LIGHTYEAR;
+			//destination += gamePhysics->GetGalaxyCoordinatesOfCenter();
+			clickPos = GetCoordinatesOnScreen(lastClick,1);
+			//x+=phy
+			wprintf(L" Autopilot FTL to: %f,%f\r\n",clickPos.X,clickPos.Y);
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+			ins->instruction = AutopilotInstruction::AP_FTL_TO;
+			ins->vector1 = clickPos;//vector2d(x,y);
+			ins->phase = 0;
+			playerShip->AddAutopilot(ins);
+
+			resourceManager->SetSceneManager(sceneManager);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(vector3d(clickPos.X,clickPos.Y,0));
+			marker->SetName(L"autopilot FTL marker");
+			UpdateCameraDistance();//to show marker
+
+			ins->object = marker;
+
+		}
+		else if (buttons&4)
+		{
+
+			//playerShip->SetPosition(vector3d(x,y,0));//DEBUG
+			vector3d clickedPosition=vector3d(clickPos.X,clickPos.Y,0);
+
+			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
+
+			GravityInfo* gravInfo = gamePhysics->GetGravityInfo(clickedPosition);
+			if (gravInfo->maxGravityObject)
+			{//only if there is dominant object
+				ins->instruction = AutopilotInstruction::AP_FLY_TO_ORBIT;
+				ins->paramObject = gravInfo->maxGravityObject;
+				ins->value1 = (clickedPosition - gravInfo->maxGravityObject->GetPosition()).getLength();
+				ins->value2 = 0;//maxspeed = 0
+
+				wprintf(L" Autopilot orbiting to: %ws\r\n",ins->paramObject->GetName().c_str());
+			}
+			else
+			{
+				wprintf(L" Autopilot orbiting to: %f,%f\r\n",clickPos.X,clickPos.Y);
+
+				ins->instruction = AutopilotInstruction::AP_FLY_TO;
+				ins->vector1 = clickPos;//vector2d(x,y);
+				ins->value1 = playerShip->GetSpeed().getLength();
+				if (ins->value1>LIGHTSPEED*0.5)
+					ins->value1 = LIGHTSPEED*0.5;
+				ins->value2 = 0;//maxspeed = 0
+			}
+			delete gravInfo;
+
+			ins->prepareText = true;
+			ins->textInfo = L"";
+			ins->phase = 0;
+			playerShip->AddAutopilot(ins);
+
+			resourceManager->SetSceneManager(sceneManager);
+			SpaceObject* marker = resourceManager->MakeMarker();
+			marker->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+			marker->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
+			marker->SetPosition(clickedPosition);
+			marker->SetName(L"autopilot orbiting marker");
+			UpdateCameraDistance();//to show marker
+
+			ins->object = marker;
+		}*/
+		else
+		{
+			//wprintf(L" Mouse click on: %f,%f\r\n",clickPos.X,clickPos.Y);//DEBUG
+			wprintf(L" Mouse click somewhere in HyperSpace...\r\n");
+		}
+	
+	}
+
 
 	{
 		text_string debug_text(L"HyperSpace\r\nSpeed: ");
@@ -6299,8 +6740,10 @@ void HyperSpaceView::UpdateCameraDistance()
 {
 	if (cameraDistanceDegree<-100)
 		cameraDistanceDegree=-100;
-	if (cameraDistanceDegree>6500)
-		cameraDistanceDegree=6500;
+	if (cameraDistanceDegree>3800)//~14x11 ly of RealSpace is seen for player
+		cameraDistanceDegree=3800;
+	/*if (cameraDistanceDegree>4800)
+		cameraDistanceDegree=4800;*/
 
 	cameraDistance = 30.0*exp(cameraDistanceDegree*0.003);
 
@@ -6416,7 +6859,7 @@ s32 DG_Game::Init(s32 Count, char **Arguments) {
 	GoStarSystem(currentStarSystem);
 
 	playerShip->SetPosition(vector3d(LIGHTYEAR*0.07,0,0));
-	playerShip->UpdateGalaxyCoordinates();
+	playerShip->UpdateGalaxyCoordinates(0);
 
 	prevPlayerMotion = SpaceObject::MOTION_NAVIGATION;
 
@@ -6538,9 +6981,13 @@ void DG_Game::Update() {
 		playerShip->UpdateQuasiSpace(frameDeltaTime,wholeGalaxy);
 		break;
 	case SpaceObject::MOTION_HYPER:
+		playerShip->UpdateGalaxyCoordinates(1);//in hyper
+		wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates());
+		wholeGalaxy->AddHyperSpaceObjects(HyperSpace,1);
+
 		break;
 	default:
-		playerShip->UpdateGalaxyCoordinates();
+		playerShip->UpdateGalaxyCoordinates(0);
 
 		//Check that player reach border some star system and so this system should be loaded
 		if (gamePhysics->IsInterstellar())
@@ -6780,7 +7227,7 @@ void DG_Game::GoHyperSpace()
 	HyperSpace->Prepare();
 
 	UseSceneManager(VIEW_HYPERSPACE);
-	wholeGalaxy->AddHyperSpaceObjects(HyperSpace);
+	wholeGalaxy->AddHyperSpaceObjects(HyperSpace,0);
 
 	playerShip->SetPosition(playerHyperSpacePos);
 	playerShip->SetSpeed(vector3d(0));
@@ -6790,13 +7237,16 @@ void DG_Game::GoHyperSpace()
 
 void DG_Game::BreakHyperSpace()
 {
-	f64 koef = HYPERSPACE_SCALE/LIGHTYEAR;
-	vector3d playerHyperSpacePos = playerShip->GetPosition();
-	vector2d playerGalaxyCoordinates = vector2d(playerHyperSpacePos.X*koef,playerHyperSpacePos.Y*koef);
+	//f64 koef = HYPERSPACE_SCALE/LIGHTYEAR;
+	//vector3d playerHyperSpacePos = playerShip->GetPosition();
+	//vector2d playerGalaxyCoordinates = vector2d(playerHyperSpacePos.X*koef,playerHyperSpacePos.Y*koef);
 
-	playerShip->SetGalaxyCoordinates(playerGalaxyCoordinates);
+	//playerShip->SetGalaxyCoordinates(playerGalaxyCoordinates);
+	playerShip->UpdateGalaxyCoordinates(1);//in hyper
 	playerShip->SetSpeed(vector3d(0));
 	playerShip->SetIntProperty(SpaceObject::MOTION_TYPE,SpaceObject::MOTION_NAVIGATION);
+
+	wprintf(L"Exit from HyperSpace\r\n");
 
 	GoInterstellar();
 }
@@ -7011,13 +7461,27 @@ PlayerShip::PlayerShip()
 	controlThrust = 1.0;
 }
 
-void PlayerShip::UpdateGalaxyCoordinates()
+void PlayerShip::UpdateGalaxyCoordinates(u32 type)
 {
-	galaxyCoordinates = physics->GetGalaxyCoordinatesOfCenter();
-	galaxyCoordinates.X += position.X / LIGHTYEAR;
-	galaxyCoordinates.Y += position.Y / LIGHTYEAR;
-	galaxyQuadrant.X = (s32)floor(galaxyCoordinates.X);
-	galaxyQuadrant.Y = (s32)floor(galaxyCoordinates.Y);
+	switch(type)
+	{
+	case 0://RealSpace
+		galaxyCoordinates = physics->GetGalaxyCoordinatesOfCenter();
+		galaxyCoordinates.X += position.X / LIGHTYEAR;
+		galaxyCoordinates.Y += position.Y / LIGHTYEAR;
+		galaxyQuadrant.X = (s32)floor(galaxyCoordinates.X);
+		galaxyQuadrant.Y = (s32)floor(galaxyCoordinates.Y);
+		break;
+	case 1://HyperSpace
+		galaxyCoordinates.X = position.X * HYPERSPACE_SCALE/LIGHTYEAR;
+		galaxyCoordinates.Y = position.Y * HYPERSPACE_SCALE/LIGHTYEAR;
+		galaxyQuadrant.X = (s32)floor(galaxyCoordinates.X);
+		galaxyQuadrant.Y = (s32)floor(galaxyCoordinates.Y);
+		break;
+	default:
+		break;
+	}
+
 }
 
 void PlayerShip::JumpToQuasiSpace(s32 direction)
@@ -7314,11 +7778,11 @@ void PlayerShip::FallIntoStargate(SpaceObject* stargate)
 	return;
 }
 
-void PlayerShip::ScanSpace()
+void PlayerShip::ScanSpace(f64 radius)
 {
 	bool found;
 	core::array<SpaceObject*> foundObjects;
-	physics->GetObjectsAtDistance(&foundObjects,position,1e4);
+	physics->GetObjectsAtDistance(&foundObjects,position,radius);
 	found = false;
 	for (u32 i = 0;i<foundObjects.size();i++)
 	{
@@ -7764,15 +8228,27 @@ void Galaxy::AddNearStarSystems(MapSpaceView* mapView)
 
 }
 
-void Galaxy::AddHyperSpaceObjects(HyperSpaceView* hyperView)
+//flags: 1 - do not add if player location is about the same (use internal "anchors")
+void Galaxy::AddHyperSpaceObjects(HyperSpaceView* hyperView, u32 flags)
 {
 	u32 i;
 	vector2d coordinates1,coordinates2;
+
+	if ((flags&1)!=0)
+	{
+		if (hyperSpaceStarsAnchor==knownStarsAnchor)
+			return;
+	}
+
+	hyperView->RemoveAllStars();
 
 	for (i=0;i<knownStars.size();i++)
 	{
 		hyperView->AddStar(knownStars[i]);
 	}
+
+	hyperSpaceStarsAnchor = knownStarsAnchor;
+	hyperView->UpdateCameraDistance();
 	return;
 
 }
