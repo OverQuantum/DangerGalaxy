@@ -267,7 +267,9 @@ coding demo1:
 120125: CHG: recalc star on moving in HyperSpace, zoom limited
 120125: CHG: conversion pixel->physics coordinates is subroutined
 120125: ADD: autopilot in HyperSpace (timer-ed)
-
+120128: ADD: forcefield on FTL (by decal only)
+120128: ADD: forcefield in QuasiSpace (by decal only)
+120128: FIX: object left in interstellar space are now moves correctly on change quadrant (+autopilot breaked)
 
 
 DONE:
@@ -334,6 +336,7 @@ DONE:
 + HyperSpace : twirl - drift of speed angle (+increase of drift on near-lightspeed)
 + HyperSpace : recalc stars on moving thru Galaxy
 + HyperSpace : timer-autopilot
++ FIX BUG: projectiles left in interstellar space are flying strange
 
 
 TODO:
@@ -347,12 +350,11 @@ TODO:
   - approx map(?)
   - entering and exiting by hypergate/jumpsphere/etc
   - distorted relation to RealSpace (? how distorted?)
-  - twirl depends on coordinates only (combined with distorted relation)
+  - twirl depends on coordinates only (combined with distorted relation?)
   - nice graphic for background (2D flow algorithm ?)
   - in-HyperSpace quick-living objects (slowdown or speedup player; pull/push by gravity-like force e.t.c.)
 - FTL
-  - "aerodynamic"-shape forcefield around ship
-- BUG: projectiles left in interstellar space are flying strange
+  - better forcefield (a bit opaque, may be reflections)
 - weapons
   - hit objects
 - stargate system
@@ -418,6 +420,7 @@ m remove overlapping of labels on map (how?)
 - autopilot to travel to specific point
 - handling of errors
 - consider vsynch
+- shift autopilot objectives on change interstellar quadrant (instead of removing them at all)
 m option to turnoff yield
 m multithreading protection (for GlobalURNG)
 
@@ -492,7 +495,8 @@ ESC - stop autopilot
 Up/Down - zoom
 MouseWheel - zoom
 F1/F2/F3/F4/F5/F6 - different time speed (1 - 1.0, 2 - 10, ... 6 - 100k)
-
+T - scan space (to identify near star)
+MouseClick Left - autopilot fly-to
 
 
 
@@ -1037,7 +1041,7 @@ class GamePhysics {
 		f64 GetTimeSpeed() {return timeSpeed;}
 
 		//Setters
-		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates) {galaxyCoordinatesOfCenter = newCoordinates;}
+		void SetGalaxyCoordinatesOfCenter(vector2d newCoordinates);
 		void SetGalaxyQuadrant(vector2ds newQuadrant) {galaxyQuadrant = newQuadrant;}
 		void SetGravityCheckRadiusSQ(f64 newRadiusSQ) {maxGravityCheckRadiusSQ = newRadiusSQ;}
 		void SetPlayerShip(PlayerShip* newPlayerShip) {playerShip = newPlayerShip;}
@@ -1254,6 +1258,7 @@ protected:
 	video::IVideoDriver* videoDriver;
 	ResourceManager* resourceManager;
 	gui::IGUITab* viewHUD;
+	SceneNode* forceField;
 };
 
 //RealSpaceView - to render RealSpace
@@ -1366,6 +1371,7 @@ private:
 	PlayerShip* playerShip;
 	SceneNode* playerShipNode;
 	scene::ICameraSceneNode* camera;
+	SceneNode* forceField;
 	gui::IGUIStaticText* simpleTextToDisplay;
 	core::array<FTLStripe*> stripes;//for GFX only
 };
@@ -3319,8 +3325,11 @@ SpaceObject* SpaceObject::FireProjectile()
 	projectile->SetSpeed(speed + GetDirection()*30000.0);
 	projectile->SetName(text_string(L"plasma ball"));
 	
+	/*
 	projectile->SetIntProperty(CURRENT_PROCESS,PROCESS_DELAYED_DELETION);
 	projectile->SetFloatProperty(PROCESS_START_TIME,physics->globalTime+10);
+	DEBUG!
+	*/
 
 	return projectile;
 	
@@ -3400,6 +3409,23 @@ void GamePhysics::RemoveObject(SpaceObject* removedObject)
 	listObjects[index] = 0;
 	listObjects.erase(index);
 
+}
+
+void GamePhysics::SetGalaxyCoordinatesOfCenter(vector2d newCoordinates)
+{
+	vector2d oldGalaxyCoords = galaxyCoordinatesOfCenter;
+	galaxyCoordinatesOfCenter = newCoordinates;
+	if (isInterstellar)
+	{
+		oldGalaxyCoords-=galaxyCoordinatesOfCenter;
+		oldGalaxyCoords*=LIGHTYEAR;
+		vector3d shift = vector3d(oldGalaxyCoords.X,oldGalaxyCoords.Y,0);
+		for (u32 i=0;i<listObjects.size();i++)
+		{
+			listObjects[i]->SetPosition(listObjects[i]->GetPosition()+shift);
+			listObjects[i]->BreakAutopilot();
+		}
+	}
 }
 
 vector3d GamePhysics::GetGravityAcceleration(vector3d location)
@@ -6109,6 +6135,16 @@ void FTLView::Init()
 		camera->setFOV(0.7f);
 	}
 
+	forceField = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+	if (forceField)
+	{
+		forceField->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+		forceField->setMaterialFlag(video::EMF_LIGHTING, false);
+		forceField->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/forcefield_ftl1.bmp"));
+		forceField->setScale(vector3df(3.0f));
+	}
+
+
 	simpleTextToDisplay = device->getGUIEnvironment()->addStaticText(
 		L"Diagnostic very-very-very-very-very-very-very-very-long 3\r\nSecond line", core::rect<s32>(5, 5, 400, 200),false,true,viewHUD);
 	simpleTextToDisplay->setOverrideColor(video::SColor(255, 0, 0, 0));
@@ -6139,6 +6175,8 @@ void FTLView::Activate()
 	angle = playerShip->GetFloatProperty(SpaceObject::ROTATION_ANGLE);
 
 	playerShipNode->setRotation(vector3df(0,0,(f32)(angle*RADTODEG64)));
+	forceField->setRotation(vector3df(0,0,(f32)(angle*RADTODEG64)));
+	forceField->setPosition(vector3df((f32)(-0.6*cos(angle)),(f32)(-0.6*sin(angle)),-0.1f));
 
 	for (u32 i=0;i<stripes.size();i++)
 	{
@@ -6323,6 +6361,7 @@ void QuasiSpaceView::Init()
 
 	playerShipNode  = resourceManager->NewShipNode();
 
+	/*
 	SceneNode* bubble = sceneManager->addSphereSceneNode((f32)0.75,16);
 	if (bubble)
 	{
@@ -6331,7 +6370,18 @@ void QuasiSpaceView::Init()
 		bubble->setMaterialFlag(video::EMF_LIGHTING, false);
 		bubble->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR);
 		//bubble->getMaterial(0).EmissiveColor.set(255,64,64,64);
+	}*/
+
+	forceField = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/plane.irrmesh"));
+	if (forceField)
+	{
+		forceField->setMaterialType(video::EMT_TRANSPARENT_ADD_COLOR );
+		forceField->setMaterialFlag(video::EMF_LIGHTING, false);
+		forceField->setMaterialTexture(0, videoDriver->getTexture(RESOURCE_PATH"/forcefield_sph1.bmp"));
+		forceField->setScale(vector3df(1.5f));
+		forceField->setPosition(vector3df(0.0f));
 	}
+
 
 	/*
 	playerShipNode = sceneManager->addMeshSceneNode(sceneManager->getMesh(RESOURCE_PATH"/ship1.irrmesh"));
@@ -7015,6 +7065,8 @@ void DG_Game::Update() {
 				playerLocalPosition.Z = 0;
 
 				playerShip->SetPosition(vector3d(playerLocalPosition));
+
+				//TODO! remove all other objects
 			}
 
 			wholeGalaxy->UpdatePlayerLocation(playerShip->GetGalaxyCoordinates()); //Could be optimized - into scope of update center of interstellar
