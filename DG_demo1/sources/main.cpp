@@ -272,6 +272,7 @@ coding demo1:
 120128: FIX: object left in interstellar space are now moves correctly on change quadrant (+autopilot breaked)
 120130: ADD: distorted relation btw RealSpace and HyperSpace
 120130: ADD: distorted relation of HyperSpace is mixed with encryption-like sbox
+120131: CHG: HyperSpace twirl depends on coordinates only
 
 
 DONE:
@@ -340,6 +341,7 @@ DONE:
 + HyperSpace : timer-autopilot
 + FIX BUG: projectiles left in interstellar space are flying strange
 + HyperSpace : distorted relation to RealSpace
++ HyperSpace : twirl depends on coordinates only (not combined with distorted relation)
 
 
 TODO:
@@ -353,9 +355,10 @@ TODO:
   - approx map(?)
   - entering and exiting by hypergate/jumpsphere/etc
   - randomize distortion with RealSpace in interstellar
-  - twirl depends on coordinates only (combined with distorted relation?)
   - nice graphic for background (2D flow algorithm ?)
+  - twirl depend on star density?
   - in-HyperSpace quick-living objects (slowdown or speedup player; pull/push by gravity-like force e.t.c.)
+  - what should be in intergalactic HyperSpace - obstacle or very plain?
 - FTL
   - better forcefield (a bit opaque, may be reflections)
 - weapons
@@ -1084,7 +1087,8 @@ class GamePhysics {
 
 		void Activate();
 
-		f64 GetHyperSpaceTwirl();
+		//f64 GetHyperSpaceTwirl();
+		f64 GetHyperSpaceTwirl(vector3d atPosition);
 
 		void DebugJumpToWormhole(u32 param);
 
@@ -1095,8 +1099,11 @@ class GamePhysics {
 		bool isInterstellar;
 		f64 maxGravityCheckRadiusSQ; //if object is farther from this radius, then we could skip checking of gravity for FTL, radius squared as it is much easier to check this way
 		f64 timeSpeed;//speed of time going, 1.0 for normal, 100 for faster
-		f64 hyperSpaceTwirl;
-		f64 hyperSpaceTwirlChangeTime;
+		//f64 hyperSpaceTwirl;
+		//f64 hyperSpaceTwirlChangeTime;
+
+		f64 hyperSpaceTwirl11,hyperSpaceTwirl12,hyperSpaceTwirl21,hyperSpaceTwirl22;
+		vector2ds hyperSpaceTwirlAnchor;//coordinates for hyperSpaceTwirl11 value
 
 		DG_Game* gameRoot;
 		PlayerShip* playerShip;
@@ -1485,6 +1492,7 @@ public:
 
 	vector3d Galaxy2HyperSpace(vector2d galaxyCoordinates);//convert galaxy coordinates to HyperSpace coordinates
 	vector2d HyperSpace2Galaxy(vector3d hyperSpaceCoordinates);//convert HyperSpace coordinates to galaxy coordinates
+	f64 GetHyperSpaceTwirl(vector2ds galaxyQuadrant);
 
 	//void DebugDump();//ONLY for debug - dump count of stars in regions 64x64 ly
 	void SaveMapTexture();
@@ -2803,7 +2811,8 @@ void SpaceObject::UpdatePhysics(f64 time)
 	case MOTION_HYPER:
 		{
 			f64 speedLen = speed.getLength();
-			f64 twirl = physics->GetHyperSpaceTwirl()*time*0.00000002*speedLen;//about 500 ly raduius of minimum curvature if v<<c
+			//f64 twirl = physics->GetHyperSpaceTwirl()*time*0.00000002*speedLen;//about 500 ly raduius of minimum curvature if v<<c
+			f64 twirl = physics->GetHyperSpaceTwirl(position)*time*0.00000002*speedLen;//about 500 ly raduius of minimum curvature if v<<c
 
 			//f64 pseudoRelativisticKoeff=1.0 - speed.getLengthSQ()/(LIGHTSPEED*LIGHTSPEED);
 			f64 pseudoRelativisticKoeff=1.0 - speedLen/LIGHTSPEED;
@@ -3356,9 +3365,13 @@ void SpaceObject::Delete()
 GamePhysics::GamePhysics()
 {
 	calcCollisions = false;
-	hyperSpaceTwirlChangeTime=0;
-	hyperSpaceTwirl=0;
-
+	//hyperSpaceTwirlChangeTime=0;
+	//hyperSpaceTwirl=0;
+	hyperSpaceTwirlAnchor= vector2ds(1,1);
+	hyperSpaceTwirl11 = 0;
+	hyperSpaceTwirl21 = 0;
+	hyperSpaceTwirl12 = 0;
+	hyperSpaceTwirl22 = 0;
 }
 
 void GamePhysics::SetTimeSpeed(f64 newSpeed)
@@ -4144,6 +4157,7 @@ void GamePhysics::GetObjectsAtDistance(core::array<SpaceObject*>* list, vector3d
 	}
 }
 
+/*
 f64 GamePhysics::GetHyperSpaceTwirl()
 {
 	//TODO: twirl should depends on galaxy coords, not be timer-random
@@ -4155,6 +4169,38 @@ f64 GamePhysics::GetHyperSpaceTwirl()
 	}
 	return hyperSpaceTwirl;
 	//return 1.0;//DEBUG
+}*/
+
+f64 GamePhysics::GetHyperSpaceTwirl(vector3d atPosition)
+{
+	//NOTE: optimal only for one objects in HyperSpace
+	vector2d galaxyPos;
+	vector2ds galaxyQuadrant;
+	galaxyPos.X = atPosition.X*HYPERSPACE_SCALE/LIGHTYEAR;
+	galaxyPos.Y = atPosition.Y*HYPERSPACE_SCALE/LIGHTYEAR;
+	galaxyQuadrant.X = (s32)(galaxyPos.X)&0xFFFFFFF0;
+	galaxyQuadrant.Y = (s32)(galaxyPos.Y)&0xFFFFFFF0;
+	if (galaxyQuadrant!=hyperSpaceTwirlAnchor)
+	{
+		Galaxy* currentGalaxy = gameRoot->GetGalaxy();
+		vector2ds galaxyQuad2 = galaxyQuadrant;
+		hyperSpaceTwirlAnchor = galaxyQuadrant;
+		hyperSpaceTwirl11 = currentGalaxy->GetHyperSpaceTwirl(galaxyQuad2);
+		galaxyQuad2.X+=16;
+		hyperSpaceTwirl21 = currentGalaxy->GetHyperSpaceTwirl(galaxyQuad2);
+		galaxyQuad2.X=galaxyQuadrant.X;
+		galaxyQuad2.Y+=16;
+		hyperSpaceTwirl12 = currentGalaxy->GetHyperSpaceTwirl(galaxyQuad2);
+		galaxyQuad2.X+=16;
+		hyperSpaceTwirl22 = currentGalaxy->GetHyperSpaceTwirl(galaxyQuad2);
+	}
+	galaxyPos.X-=galaxyQuadrant.X;
+	galaxyPos.Y-=galaxyQuadrant.Y;
+	galaxyPos*=0.0625;// divide by 16
+	//return GetHyperSpaceTwirl();//TEMP
+	return hyperSpaceTwirl11+galaxyPos.X*(hyperSpaceTwirl21-hyperSpaceTwirl11)+
+		galaxyPos.Y*(hyperSpaceTwirl12-hyperSpaceTwirl11)+
+		galaxyPos.X*galaxyPos.Y*(hyperSpaceTwirl22+hyperSpaceTwirl11-hyperSpaceTwirl12-hyperSpaceTwirl21);
 }
 
 //#########################################################################
@@ -6568,6 +6614,8 @@ void HyperSpaceView::Update(f64 frameDeltaTime)
 {
 	if (eventReceiver->IsKeyPressed(irr::KEY_KEY_X))
 	{
+		playerShip->SetSpeed(vector3d(0,LIGHTSPEED*0.85,0));
+
 	}
 
 	if(eventReceiver->IsKeyDown(irr::KEY_KEY_W))
@@ -6766,9 +6814,7 @@ void HyperSpaceView::Update(f64 frameDeltaTime)
 			//wprintf(L" Mouse click on: %f,%f\r\n",clickPos.X,clickPos.Y);//DEBUG
 			wprintf(L" Mouse click somewhere in HyperSpace...\r\n");
 		}
-	
 	}
-
 
 	{
 		text_string debug_text(L"HyperSpace\r\nSpeed: ");
@@ -6778,7 +6824,8 @@ void HyperSpaceView::Update(f64 frameDeltaTime)
 		debug_text += playerSpeed;
 		debug_text += L" km/s\r\n";
 		debug_text += (playerSpeed/LIGHTSPEED);
-		debug_text += L" c; ";
+		debug_text += L" c; \r\nTwirl: ";
+		debug_text += gamePhysics->GetHyperSpaceTwirl(playerShip->GetPosition());
 		debug_text += L"\r\n";
 		debug_text += playerShip->GetAutopilotInfo();
 		simpleTextToDisplay->setText(debug_text.c_str());
@@ -6803,7 +6850,7 @@ void HyperSpaceView::UpdateCameraDistance()
 {
 	if (cameraDistanceDegree<-100)
 		cameraDistanceDegree=-100;
-	if (cameraDistanceDegree>3800)//~14x11 ly of RealSpace is seen for player
+	/*if (cameraDistanceDegree>3800)//~14x11 ly of RealSpace is seen for player
 		cameraDistanceDegree=3800;
 	/*if (cameraDistanceDegree>4800)
 		cameraDistanceDegree=4800;*/
@@ -9271,6 +9318,12 @@ vector2d Galaxy::HyperSpace2Galaxy(vector3d hyperSpaceCoordinates)
 	yInt = (f64)y;
 
 	return vector2d(xInt + xFrac,yInt + yFrac);
+}
+
+f64 Galaxy::GetHyperSpaceTwirl(vector2ds galaxyQuadrant)
+{
+	galaxyRNG->SetSeedWithCoordinates(galaxySeed,16,(u32)galaxyQuadrant.X,(u32)galaxyQuadrant.Y);
+	return (f64)(-1.0+galaxyRNG->GetByteByOffset(5)/127.5);
 }
 
 
