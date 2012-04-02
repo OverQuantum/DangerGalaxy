@@ -276,6 +276,8 @@ coding demo1:
 120201: ADD: HyperSpace "fog" limits star visibility to ~6 l.y.
 120201: ADD: locations of planets seen from HyperSpace
 
+120403: FIX: StargateAddress2text for Linux
+
 
 DONE:
 + surface of stars - without lighting each other
@@ -9368,7 +9370,7 @@ text_string Galaxy::StargateAddress2text(u64 address)
 {
 	wchar_t tmp[255];
 	u32 len;
-	len = swprintf(tmp,L"%09I64X",address);
+	len = swprintf(tmp,255,L"%09I64X",address);
 	if (len>8)
 	{
 		tmp[len+2]=tmp[len];
