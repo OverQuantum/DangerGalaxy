@@ -278,6 +278,10 @@ coding demo1:
 
 120403: FIX: StargateAddress2text for Linux
 
+130520: FIX: abs->fabs for Linux
+130520: FIX: collision on stargate eventhorizon restored
+130520: ADD: R for breaking speed
+
 
 DONE:
 + surface of stars - without lighting each other
@@ -457,7 +461,8 @@ CONTROL on RealSpace main:
 A/D - rotate
 W/S - thrust
 1/2/3/4/5/6 - different thrust levels (1 - highest, 6 - lowest)
-Space - breaking (autopilot) relative to distant stars
+Space - fire weapon (plasma ball)
+R - breaking (autopilot) relative to distant stars
 O - orbiting (around object which produce max graviry force at player's ship)
 ESC - stop autopilot
 Up/Down - zoom
@@ -2120,7 +2125,7 @@ bool SpaceObject::AutopilotRotate(vector3d requiredDirection)
 	f64 whereToRotate;
 	whereToRotate = direction.Y*speedNormalized.X - direction.X*speedNormalized.Y;
 
-	if (abs(whereToRotate)<0.005 && direction.dotProduct(requiredDirection)>0)
+	if (fabs(whereToRotate)<0.005 && direction.dotProduct(requiredDirection)>0)
 	{
 		SetFloatProperty(ROTATION_ANGLE,atan2(requiredDirection.Y,requiredDirection.X));//Force set rotation to required angle
 		return true;
@@ -2514,7 +2519,7 @@ bool SpaceObject::AutopilotFlyToOrbit(AutopilotInstruction* instruction, f64 fra
 			direction.normalize();
 			speedInDirection = direction.dotProduct(instruction->paramObject->speed-speed);
 
-			instruction->value4 = abs(speedInDirection)*sqrt(1.0/abs(distance-instruction->value5));
+			instruction->value4 = fabs(speedInDirection)*sqrt(1.0/fabs(distance-instruction->value5));
 			instruction->phase = 5;
 		}
 		break;
@@ -2537,7 +2542,7 @@ bool SpaceObject::AutopilotFlyToOrbit(AutopilotInstruction* instruction, f64 fra
 			instruction->object->SetPosition(instruction->paramObject->position-direction*instruction->value5);
 
 			//setSpeedTo = maxSpeed*(distance-instruction->value5)/instruction->value4;
-			setSpeedTo = 0.8*instruction->value4*sqrt(abs(distance-instruction->value5));
+			setSpeedTo = 0.8*instruction->value4*sqrt(fabs(distance-instruction->value5));
 			if (distance<instruction->value5)
 				setSpeedTo = -setSpeedTo;
 
@@ -2569,7 +2574,7 @@ bool SpaceObject::AutopilotFlyToOrbit(AutopilotInstruction* instruction, f64 fra
 
 			requiredSpeed+=instruction->paramObject->speed;// + direction*setSpeedTo;
 
-			if (abs(distance-instruction->value5)<1)
+			if (fabs(distance-instruction->value5)<1)
 			{
 				return (AutopilotSetSpeed(requiredSpeed));
 			}
@@ -2635,7 +2640,7 @@ bool SpaceObject::AutopilotHyperFlyTo(AutopilotInstruction* instruction, f64 fra
 	case 2:
 		//Accelerate
 		maxSpeed = instruction->value2;
-		if (abs(speedInDirection-maxSpeed)<maxSpeed*0.001)
+		if (fabs(speedInDirection-maxSpeed)<maxSpeed*0.001)
 		{
 			f64 time = sqrt(distanceSQ)/maxSpeed + 0.5*maxSpeed/maxThrust;
 			//wprintf(L" Autopilot fly-to, speed reached, flying... ETA %.3f\r\n",time);
@@ -3957,7 +3962,7 @@ void GamePhysics::CheckCollisions(SpaceObject* object)
 				//calc: shift = pos - prevpos, fall = gate + axis*y, fall = pos + shift*x, y = [pos-gate,shift]/[axis,shift]
 				vector3d shift = object->GetPosition()-object->GetPrevPosition();
 				f64 fallLocation = (shift.X*curVector.Y-shift.Y*curVector.X)/(shift.X*wormholeDirection.Y-shift.Y*wormholeDirection.X);
-				if (abs(fallLocation)<listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS))
+				if (fabs(fallLocation)<listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS))
 				{
 					object->FallIntoWormhole(listObjects[i]);
 					return;//no more collisions expected
@@ -3984,7 +3989,7 @@ void GamePhysics::CheckCollisions(SpaceObject* object)
 				vector3d stargateDirection = vector3d(stargateNormale.Y,-stargateNormale.X,0);
 				vector3d shift = object->GetPosition()-object->GetPrevPosition();
 				f64 fallLocation = (shift.X*curVector.Y-shift.Y*curVector.X)/(shift.X*stargateDirection.Y-shift.Y*stargateDirection.X);
-				if (abs(fallLocation)<listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS))
+				if (fabs(fallLocation)<listObjects[i]->GetFloatProperty(SpaceObject::GEOMETRY_RADIUS))
 				{
 					if (listObjects[i]->GetIntProperty(SpaceObject::TRAVEL_TO_X)<-65536)
 					{//bounce to event horizon of output stargate
@@ -4594,6 +4599,7 @@ SpaceObject* ResourceManager::MakeStargateEH()
 	newStargateEH->SetFloatProperty(SpaceObject::MASS,0);
 	newStargateEH->SetFloatProperty(SpaceObject::GEOMETRY_RADIUS,70.0);
 	newStargateEH->SetIntProperty(SpaceObject::EMIT_GRAVITY,0);
+	newStargateEH->SetIntProperty(SpaceObject::COLLISIONS_CHECK,1);
 	newStargateEH->SetIntProperty(SpaceObject::AFFECTED_BY_GRAVITY,0);
 	newStargateEH->SetIntProperty(SpaceObject::TRAVEL_TO_X,-100000);//not working
 	newStargateEH->SetIntProperty(SpaceObject::TRAVEL_TO_Y,0);
@@ -5080,6 +5086,8 @@ void RealSpaceView::Update(f64 frameDeltaTime)
 
 		//if (eventReceiver->IsKeyDown(irr::KEY_SPACE))
 		//	playerShip->AutopilotBreak();
+		if (eventReceiver->IsKeyDown(irr::KEY_KEY_R))
+			playerShip->AutopilotBreak();
 		if (eventReceiver->IsKeyPressed(irr::KEY_KEY_Z))
 		{
 			AutopilotInstruction* ins = new AutopilotInstruction();//delete in ~SpaceObject or in autopilot processing
@@ -8293,7 +8301,7 @@ void Galaxy::Init()
 		armKoef = 2.0;*/
 
 		//pitch angle, calc from spirality
-		pitchAngle = TWO_PI*0.25-atan(abs(1.0/spiralityB));
+		pitchAngle = TWO_PI*0.25-atan(fabs(1.0/spiralityB));
 
 		armDist1 = halfDensityRadius*.5;
 
@@ -8719,7 +8727,7 @@ GalaxyStarSystem* Galaxy::GetStartStarSystem()
 	for (i=0;i<knownStars.size();i++)
 	{
 		//distanceSQ = (knownStars[i]->GetGalaxyCoordinates()).getLengthSQ();//distance from (0,0)
-		distanceSQ = abs(knownStars[i]->GetGalaxyCoordinates().Y);//need min Y coordinate
+		distanceSQ = fabs(knownStars[i]->GetGalaxyCoordinates().Y);//need min Y coordinate
 		if (distanceSQ<minDistanceSQ)
 		{
 			minDistanceSQ = distanceSQ;
