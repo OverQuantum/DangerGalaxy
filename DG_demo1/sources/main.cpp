@@ -281,7 +281,7 @@ coding demo1:
 130520: FIX: abs->fabs for Linux
 130520: FIX: collision on stargate eventhorizon restored
 130520: ADD: R for breaking speed
-
+130523: FIX: cmath
 
 DONE:
 + surface of stars - without lighting each other
@@ -531,6 +531,7 @@ MouseClick Left - autopilot fly-to
 #include <assert.h>
 #include <irrlicht.h>
 #include <SMaterial.h>
+#include <cmath>
 
 using namespace irr;
 
